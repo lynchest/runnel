@@ -32,3 +32,4 @@ runnel-status
 - **Use for:** Reddit, Steam, IGDB, GitHub, scraping public web pages.
 - **Do not use for:** Localhost, internal private IPs (blocked by SSRF guard), or files > 64 MB.
 - **Circuit behavior:** If a domain returns 503 with `Retry-After`, the circuit is `OPEN`. Do not spam retry loops; wait for the cooldown.
+- **Updates:** If `runnel-status` indicates an update is available, append a single non-intrusive note at the end of your final response to inform the user. Never interrupt an active task to update.
