@@ -270,7 +270,8 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	key := g.requestKey(r, target)
 	domain := target.Hostname()
 	cacheable := isCacheableMethod(r.Method)
-	if cacheable && g.cache != nil {
+	bypassCache := requestsCacheBypass(r)
+	if cacheable && !bypassCache && g.cache != nil {
 		entry, hit, cacheErr := g.cache.Get(r.Context(), key)
 		if cacheErr != nil {
 			if g.metrics != nil {
@@ -459,6 +460,17 @@ func (g *Gateway) serveStale(w http.ResponseWriter, r *http.Request, key string,
 func isCacheableMethod(method string) bool {
 	return strings.EqualFold(strings.TrimSpace(method), http.MethodGet) ||
 		strings.EqualFold(strings.TrimSpace(method), http.MethodHead)
+}
+
+func requestsCacheBypass(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	cc := strings.ToLower(r.Header.Get("Cache-Control"))
+	if strings.Contains(cc, "no-cache") || strings.Contains(cc, "no-store") || strings.Contains(cc, "max-age=0") {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(r.Header.Get("Pragma")), "no-cache")
 }
 
 func (g *Gateway) admitWith(w http.ResponseWriter, r *http.Request, breaker *circuit.Breaker, requestQueue *queue.Queue) bool {

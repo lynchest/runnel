@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -55,6 +56,58 @@ func TestProxyCacheMissThenHitUsesOneUpstreamRequest(t *testing.T) {
 	snapshot := app.Metrics().Snapshot()
 	if snapshot.CacheMissesTotal != 1 || snapshot.CacheHitsTotal != 1 {
 		t.Fatalf("cache metrics = %+v, want one miss and one hit", snapshot)
+	}
+}
+
+func TestProxyCacheBypassWithNoCacheHeader(t *testing.T) {
+	var calls atomic.Int32
+	upstreamURL, closeUpstream := startIPv4Upstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		count := calls.Add(1)
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = io.WriteString(w, "version-"+strconv.Itoa(int(count)))
+	})
+	defer closeUpstream()
+
+	app, err := NewApplication(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := app.Shutdown(context.Background()); err != nil {
+			t.Errorf("shutdown application: %v", err)
+		}
+	}()
+	path := "/proxy?url=" + url.QueryEscape(upstreamURL)
+
+	first := serveAppRequest(t, app, http.MethodGet, path, "")
+	if first.Code != http.StatusOK || first.Body.String() != "version-1" {
+		t.Fatalf("first response = %d %q, want version-1", first.Code, first.Body.String())
+	}
+	if got := first.Header().Get("X-Cache"); got != "MISS" {
+		t.Fatalf("first X-Cache = %q, want MISS", got)
+	}
+
+	second := serveAppRequest(t, app, http.MethodGet, path, "")
+	if second.Code != http.StatusOK || second.Body.String() != "version-1" {
+		t.Fatalf("second response = %d %q, want version-1", second.Code, second.Body.String())
+	}
+	if got := second.Header().Get("X-Cache"); got != "HIT" {
+		t.Fatalf("second X-Cache = %q, want HIT", got)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.Header.Set("Cache-Control", "no-cache")
+	third := httptest.NewRecorder()
+	app.Handler().ServeHTTP(third, req)
+
+	if third.Code != http.StatusOK || third.Body.String() != "version-2" {
+		t.Fatalf("third response = %d %q, want version-2", third.Code, third.Body.String())
+	}
+	if got := third.Header().Get("X-Cache"); got != "MISS" {
+		t.Fatalf("third X-Cache = %q, want MISS", got)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("upstream calls = %d, want 2", got)
 	}
 }
 
