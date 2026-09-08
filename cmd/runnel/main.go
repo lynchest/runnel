@@ -21,6 +21,7 @@ import (
 	"github.com/lynchest/runnel/internal/limiter"
 	"github.com/lynchest/runnel/internal/proxy"
 	"github.com/lynchest/runnel/internal/queue"
+	"github.com/lynchest/runnel/internal/skill"
 	"github.com/lynchest/runnel/internal/storage"
 )
 
@@ -632,8 +633,39 @@ func loadConfig(path string) (*config.Config, error) {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "install-skill" {
+		targetDir := ""
+		if len(os.Args) > 2 {
+			targetDir = os.Args[2]
+		}
+		path, err := skill.Install(targetDir)
+		if err != nil {
+			log.Fatalf("failed to install skill: %v", err)
+		}
+		fmt.Printf("Successfully installed runnel AI agent skill to:\n  %s\n", path)
+		fmt.Println("AI coding agents (Antigravity, Codex, Cursor, Claude Code) will now automatically route external requests through runnel.")
+		return
+	}
+
 	configPath := flag.String("config", "", "path to an optional YAML configuration file")
+	installSkillFlag := flag.Bool("install-skill", false, "install embedded AI agent skill definition to ~/.agents/skills/runnel")
+	versionFlag := flag.Bool("version", false, "print version information and exit")
 	flag.Parse()
+
+	if *versionFlag {
+		fmt.Println("runnel v0.1.1")
+		return
+	}
+
+	if *installSkillFlag {
+		path, err := skill.Install("")
+		if err != nil {
+			log.Fatalf("failed to install skill: %v", err)
+		}
+		fmt.Printf("Successfully installed runnel AI agent skill to:\n  %s\n", path)
+		return
+	}
+
 	path := strings.TrimSpace(*configPath)
 	if path == "" {
 		path = strings.TrimSpace(os.Getenv("RUNNEL_CONFIG"))

@@ -225,17 +225,21 @@ To bypass the cache and force a fresh fetch from upstream, send a `Cache-Control
 
 ### Installing the Skill
 
-**Global Scope (All workspaces):**
+**Via runnel CLI (Recommended):**
+```bash
+# Automatically installs embedded skill to ~/.agents/skills/runnel
+runnel install-skill
+
+# Or install to a specific workspace directory
+runnel install-skill .agents/skills/runnel
+```
+
+**Manual Copy:**
 ```bash
 mkdir -p ~/.agents/skills
 cp -r skills/runnel ~/.agents/skills/
 ```
 
-**Project Scope (Workspace-specific):**
-```bash
-mkdir -p .agents/skills
-cp -r skills/runnel .agents/skills/
-```
 
 ## Development
 
