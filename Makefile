@@ -7,6 +7,7 @@ all: build
 
 build:
 	go build -o bin/runnel ./cmd/runnel
+	go build -o bin/runnel-get ./cmd/runnel-get
 
 test:
 	go test -v ./...

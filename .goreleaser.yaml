@@ -18,9 +18,29 @@ builds:
         goarch: arm64
     ldflags:
       - -s -w
+  - id: runnel-get
+    main: ./cmd/runnel-get
+    binary: runnel-get
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
 
 archives:
   - id: default
+    ids:
+      - runnel
+      - runnel-get
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     format_overrides:
       - goos: windows
@@ -30,8 +50,6 @@ archives:
       - LICENSE
       - README.md
       - runnel.example.yaml
-      - scripts/runnel-get
-      - scripts/runnel-get.cmd
 
 checksum:
   name_template: "checksums.txt"

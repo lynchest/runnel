@@ -227,8 +227,8 @@ runnel-get --output markdown "https://example.com"
 ```
 
 Raw output remains the default. Non-HTML responses are passed through unchanged.
-The helper scripts are included under `scripts/` in every release archive and
-require Python 3 (standard library only).
+The native `runnel-get` executable is included in every release archive and
+does not require Python or another external runtime.
 
 The helper connects to `http://127.0.0.1:8090` by default. Set `RUNNEL_URL` to
 the base URL of a remote or differently configured gateway.
