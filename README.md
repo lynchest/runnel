@@ -217,7 +217,28 @@ the gateway returns `503 Service Unavailable` with a `Retry-After` header.
 Non-idempotent methods such as POST, PUT, PATCH, and DELETE are not queued while
 a circuit is open; they are rejected with the applicable cooldown information.
 
+To bypass the cache and force a fresh fetch from upstream, send a `Cache-Control: no-cache` header or use `runnel-get --no-cache <url>`.
+
+## AI Agent Integration (Skill)
+
+`runnel` includes an official agent skill definition ([`skills/runnel/SKILL.md`](skills/runnel/SKILL.md)) compatible with Antigravity, Codex, Cursor, Claude Code, and other agentic coding harnesses. When installed, coding agents automatically route web scraping, external API queries, and documentation fetching through the gateway to eliminate 429 penalties and IP bans.
+
+### Installing the Skill
+
+**Global Scope (All workspaces):**
+```bash
+mkdir -p ~/.agents/skills
+cp -r skills/runnel ~/.agents/skills/
+```
+
+**Project Scope (Workspace-specific):**
+```bash
+mkdir -p .agents/skills
+cp -r skills/runnel .agents/skills/
+```
+
 ## Development
+
 
 ```bash
 # Tests
