@@ -79,6 +79,14 @@ func newApplication(cfg *config.Config, client *http.Client, resolver proxy.Reso
 	if strings.TrimSpace(copyConfig.Security.AdminToken) == "" {
 		copyConfig.Security.AdminToken = strings.TrimSpace(os.Getenv("RUNNEL_ADMIN_TOKEN"))
 	}
+	if h := strings.TrimSpace(os.Getenv("RUNNEL_HOST")); h != "" {
+		copyConfig.Server.Host = h
+	}
+	if p := strings.TrimSpace(os.Getenv("RUNNEL_PORT")); p != "" {
+		if portNum, err := strconv.Atoi(p); err == nil && portNum > 0 && portNum <= 65535 {
+			copyConfig.Server.Port = portNum
+		}
+	}
 	if err := copyConfig.Validate(); err != nil {
 		return nil, fmt.Errorf("validate application config: %w", err)
 	}

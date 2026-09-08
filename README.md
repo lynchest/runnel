@@ -81,9 +81,36 @@ incoming request bodies are bounded by the configured 10 MB default.
 
 ## Installation
 
-> **Note for users and automated agents:** You do **not** need to install Go or build from source. Pre-compiled, zero-dependency binaries for Linux (`amd64`, `arm64`), macOS (`amd64`, `arm64`), and Windows are available in [GitHub Releases](https://github.com/lynchest/runnel/releases).
+> **Note for users and automated agents:** You do **not** need to install Go or build from source. Pre-compiled, zero-dependency binaries for Linux (`amd64`, `arm64`), macOS (`amd64`, `arm64`), and Windows are available in [GitHub Releases](https://github.com/lynchest/runnel/releases), as well as multi-arch container images on GHCR.
 
-### Run a release binary (Recommended)
+### Run with Docker (Recommended for Services & Sidecars)
+
+Multi-arch container images (`linux/amd64`, `linux/arm64`) are published to GitHub Container Registry:
+
+```bash
+docker run -d --name runnel \
+  -p 8090:8090 \
+  -v runnel-data:/data \
+  ghcr.io/lynchest/runnel:latest
+```
+
+Or as a sidecar in `docker-compose.yml`:
+
+```yaml
+services:
+  runnel:
+    image: ghcr.io/lynchest/runnel:latest
+    ports:
+      - "8090:8090"
+    volumes:
+      - runnel-data:/data
+    restart: unless-stopped
+
+volumes:
+  runnel-data:
+```
+
+### Run a release binary
 
 Pre-built binaries are available for all major platforms:
 

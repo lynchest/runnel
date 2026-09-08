@@ -181,3 +181,30 @@ func TestApplicationCORSConfigControlsPreflightAndOrdinaryResponses(t *testing.T
 		})
 	}
 }
+
+func TestNewApplicationEnvironmentOverrides(t *testing.T) {
+	t.Setenv("RUNNEL_HOST", "0.0.0.0")
+	t.Setenv("RUNNEL_PORT", "9095")
+	t.Setenv("RUNNEL_ADMIN_TOKEN", "env-secret")
+
+	cfg := testConfig(t)
+	app, err := NewApplication(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := app.Shutdown(context.Background()); err != nil {
+			t.Errorf("shutdown application: %v", err)
+		}
+	}()
+
+	if app.cfg.Server.Host != "0.0.0.0" {
+		t.Fatalf("cfg.Server.Host = %q, want 0.0.0.0", app.cfg.Server.Host)
+	}
+	if app.cfg.Server.Port != 9095 {
+		t.Fatalf("cfg.Server.Port = %d, want 9095", app.cfg.Server.Port)
+	}
+	if app.cfg.Security.AdminToken != "env-secret" {
+		t.Fatalf("cfg.Security.AdminToken = %q, want env-secret", app.cfg.Security.AdminToken)
+	}
+}
