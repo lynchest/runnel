@@ -83,11 +83,11 @@ func (cleaner *Cleaner) RunOnce(ctx context.Context, now time.Time) (CleanerStat
 	deleted, err := cleaner.repo.DeleteExpired(ctx, now)
 	stats.ExpiredDeleted = deleted
 	if err != nil {
-		cleaner.setLastError(err)
+		cleaner.recordError(err)
 		return stats, err
 	}
 	if err := cleaner.repo.Checkpoint(ctx); err != nil {
-		cleaner.setLastError(err)
+		cleaner.recordError(err)
 		return stats, err
 	}
 	stats.Checkpointed = true
@@ -95,7 +95,7 @@ func (cleaner *Cleaner) RunOnce(ctx context.Context, now time.Time) (CleanerStat
 	if cleaner.opts.MaxBytes > 0 {
 		size, err := cleaner.repo.DatabaseSize(ctx)
 		if err != nil {
-			cleaner.setLastError(err)
+			cleaner.recordError(err)
 			return stats, err
 		}
 		stats.DatabaseBytes = size
@@ -103,17 +103,17 @@ func (cleaner *Cleaner) RunOnce(ctx context.Context, now time.Time) (CleanerStat
 			removed, err := cleaner.repo.EvictOldest(ctx, cleaner.opts.EvictionBatchSize)
 			stats.Evicted = removed
 			if err != nil {
-				cleaner.setLastError(err)
+				cleaner.recordError(err)
 				return stats, err
 			}
 			stats.DatabaseBytes, err = cleaner.repo.DatabaseSize(ctx)
 			if err != nil {
-				cleaner.setLastError(err)
+				cleaner.recordError(err)
 				return stats, err
 			}
 			if removed > 0 {
 				if err := cleaner.repo.Checkpoint(ctx); err != nil {
-					cleaner.setLastError(err)
+					cleaner.recordError(err)
 					return stats, err
 				}
 			}
@@ -121,6 +121,13 @@ func (cleaner *Cleaner) RunOnce(ctx context.Context, now time.Time) (CleanerStat
 	}
 	cleaner.passes.Add(1)
 	return stats, nil
+}
+
+func (cleaner *Cleaner) recordError(err error) {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return
+	}
+	cleaner.setLastError(err)
 }
 
 // Start launches periodic cleanup with an immediate first pass.
