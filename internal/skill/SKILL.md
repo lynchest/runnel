@@ -15,11 +15,14 @@ description: >-
 Route external rate-limited GET requests through `runnel`:
 
 ```bash
-# 1. CLI (auto-detects local / Tailscale / LAN gateway):
+# 1. CLI (uses RUNNEL_URL, then falls back to localhost):
 runnel-get "https://api.github.com/zen"
 
 # Force fresh data (bypasses SQLite cache):
 runnel-get --no-cache "https://api.github.com/zen"
+
+# Convert HTML locally to compact, agent-friendly Markdown (raw remains the default):
+runnel-get --output markdown "https://example.com"
 
 # 2. Raw HTTP fallback (cURL):
 curl -s "http://127.0.0.1:8090/proxy?url=https%3A%2F%2Fapi.github.com%2Fzen"

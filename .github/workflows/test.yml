@@ -40,6 +40,9 @@ jobs:
       - name: Run Tests
         run: go test -v ./...
 
+      - name: Test runnel-get helper
+        run: python3 -m unittest scripts/test_runnel_get.py
+
       - name: Run Tests with Race Detector
         run: go test -race -v ./...
 

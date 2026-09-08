@@ -219,6 +219,20 @@ a circuit is open; they are rejected with the applicable cooldown information.
 
 To bypass the cache and force a fresh fetch from upstream, send a `Cache-Control: no-cache` header or use `runnel-get --no-cache <url>`.
 
+For agent-friendly output from HTML pages, the cross-platform helper can convert
+the response locally without changing the gateway cache:
+
+```bash
+runnel-get --output markdown "https://example.com"
+```
+
+Raw output remains the default. Non-HTML responses are passed through unchanged.
+The helper scripts are included under `scripts/` in every release archive and
+require Python 3 (standard library only).
+
+The helper connects to `http://127.0.0.1:8090` by default. Set `RUNNEL_URL` to
+the base URL of a remote or differently configured gateway.
+
 ## AI Agent Integration (Skill)
 
 `runnel` includes an official agent skill definition ([`skills/runnel/SKILL.md`](skills/runnel/SKILL.md)) compatible with Antigravity, Codex, Cursor, Claude Code, and other agentic coding harnesses. When installed, coding agents automatically route web scraping, external API queries, and documentation fetching through the gateway to eliminate 429 penalties and IP bans.

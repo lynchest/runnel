@@ -30,6 +30,8 @@ archives:
       - LICENSE
       - README.md
       - runnel.example.yaml
+      - scripts/runnel-get
+      - scripts/runnel-get.cmd
 
 checksum:
   name_template: "checksums.txt"
