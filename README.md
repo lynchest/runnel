@@ -85,20 +85,43 @@ incoming request bodies are bounded by the configured 10 MB default.
 
 ### Run a release binary (Recommended)
 
-Download and extract the archive for your platform from [GitHub Releases](https://github.com/lynchest/runnel/releases):
+Pre-built binaries are available for all major platforms:
+
+| Platform | Architecture | Archive | Executable |
+| --- | --- | --- | --- |
+| **Linux** | x86_64 (`amd64`), ARM64 (`arm64`) | `runnel_*_linux_<arch>.tar.gz` | `./runnel` |
+| **macOS** | Apple Silicon (`arm64`), Intel (`amd64`) | `runnel_*_darwin_<arch>.tar.gz` | `./runnel` |
+| **Windows** | x86_64 (`amd64`) | `runnel_*_windows_amd64.zip` | `runnel.exe` |
+
+Download the archive for your platform from [GitHub Releases](https://github.com/lynchest/runnel/releases):
+
+#### Linux & macOS
 
 ```bash
-# Example for Linux AMD64 (or linux_arm64 / darwin_arm64 etc.)
-tar -xzf runnel_*_linux_amd64.tar.gz
+# Extract archive (example for Linux/macOS):
+tar -xzf runnel_*_linux_amd64.tar.gz   # Linux x86_64
+# tar -xzf runnel_*_linux_arm64.tar.gz   # Linux ARM64
+# tar -xzf runnel_*_darwin_arm64.tar.gz  # macOS Apple Silicon (M1/M2/M3/M4)
+# tar -xzf runnel_*_darwin_amd64.tar.gz  # macOS Intel
+
 ./runnel -config runnel.example.yaml
 ```
 
 Or download via GitHub CLI:
 
 ```bash
+# Linux AMD64
 gh release download -R lynchest/runnel --pattern "*linux_amd64.tar.gz"
-tar -xzf runnel_*_linux_amd64.tar.gz
-./runnel -config runnel.example.yaml
+
+# macOS Apple Silicon
+gh release download -R lynchest/runnel --pattern "*darwin_arm64.tar.gz"
+```
+
+#### Windows (PowerShell)
+
+```powershell
+Expand-Archive -Path runnel_*_windows_amd64.zip -DestinationPath .
+.\runnel.exe -config runnel.example.yaml
 ```
 
 ### Build from source (Developers)
@@ -117,6 +140,7 @@ With the default configuration, the service listens on `127.0.0.1:8090`:
 
 ```bash
 ./runnel -config runnel.example.yaml
+# (on Windows: .\runnel.exe -config runnel.example.yaml)
 # (or ./bin/runnel if built from source)
 ```
 
