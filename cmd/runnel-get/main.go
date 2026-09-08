@@ -45,8 +45,8 @@ func runWithClient(args []string, stdout, stderr io.Writer, client *http.Client)
 	headers := headerFlags(http.Header{})
 	flags.Var(&headers, "H", "request header in 'Name: Value' form (repeatable)")
 	flags.Usage = func() {
-		fmt.Fprintln(flags.Output(), "Usage: runnel-get [--output raw|markdown] [-H 'Header: Value'] <URL>")
-		fmt.Fprintln(flags.Output(), "Example: runnel-get --output markdown 'https://example.com'")
+		_, _ = fmt.Fprintln(flags.Output(), "Usage: runnel-get [--output raw|markdown] [-H 'Header: Value'] <URL>")
+		_, _ = fmt.Fprintln(flags.Output(), "Example: runnel-get --output markdown 'https://example.com'")
 	}
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -59,7 +59,7 @@ func runWithClient(args []string, stdout, stderr io.Writer, client *http.Client)
 		return 1
 	}
 	if *output != "raw" && *output != "markdown" {
-		fmt.Fprintln(stderr, "error: --output must be raw or markdown")
+		_, _ = fmt.Fprintln(stderr, "error: --output must be raw or markdown")
 		return 1
 	}
 	if *noCache || *fresh || *shortFresh {
@@ -68,43 +68,43 @@ func runWithClient(args []string, stdout, stderr io.Writer, client *http.Client)
 
 	gateway := findGateway(client)
 	if gateway == "" {
-		fmt.Fprintln(stderr, "error: cannot reach runnel gateway; check RUNNEL_URL")
+		_, _ = fmt.Fprintln(stderr, "error: cannot reach runnel gateway; check RUNNEL_URL")
 		return 2
 	}
 
 	proxyURL := gateway + "/proxy?url=" + url.QueryEscape(flags.Arg(0))
 	req, err := http.NewRequest(http.MethodGet, proxyURL, nil)
 	if err != nil {
-		fmt.Fprintf(stderr, "request error: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "request error: %v\n", err)
 		return 1
 	}
 	req.Header = http.Header(headers).Clone()
 	resp, err := client.Do(req)
 	if err != nil {
-		fmt.Fprintf(stderr, "connection error: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "connection error: %v\n", err)
 		return 1
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		fmt.Fprintf(stderr, "response error: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "response error: %v\n", err)
 		return 1
 	}
 	if resp.StatusCode >= 400 {
-		fmt.Fprintf(stderr, "HTTP error: %s\n", resp.Status)
+		_, _ = fmt.Fprintf(stderr, "HTTP error: %s\n", resp.Status)
 		_, _ = stderr.Write(body)
 		return resp.StatusCode
 	}
 	if *output == "markdown" && strings.HasPrefix(strings.ToLower(resp.Header.Get("Content-Type")), "text/html") {
 		body, err = htmlToMarkdown(body, resp.Header.Get("Content-Type"))
 		if err != nil {
-			fmt.Fprintf(stderr, "HTML conversion error: %v\n", err)
+			_, _ = fmt.Fprintf(stderr, "HTML conversion error: %v\n", err)
 			return 1
 		}
 	}
 	if _, err := stdout.Write(body); err != nil {
-		fmt.Fprintf(stderr, "output error: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "output error: %v\n", err)
 		return 1
 	}
 	return 0
@@ -122,7 +122,7 @@ func findGateway(client *http.Client) string {
 		req.Header.Set("User-Agent", "runnel-probe")
 		resp, err := probeClient.Do(req)
 		if err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				return gateway
 			}
