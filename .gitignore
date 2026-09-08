@@ -1,0 +1,28 @@
+# Build and release artifacts
+/bin/
+/dist/
+
+# Local databases and runtime data
+/data/
+*.db
+*.db-shm
+*.db-wal
+
+# Test and profiling artifacts
+*.out
+*.test
+*.prof
+coverage.txt
+
+# Local environments and configuration overrides
+.env
+*.local.yaml
+*.local.yml
+
+# Operating system and editor metadata
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+

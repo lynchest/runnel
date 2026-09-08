@@ -1,0 +1,72 @@
+name: Test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  lint-and-test:
+    name: Lint and Test (Ubuntu AMD64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Check Formatting
+        run: |
+          diffs=$(gofmt -l .)
+          if [ -n "$diffs" ]; then
+            echo "Unformatted files found:"
+            echo "$diffs"
+            exit 1
+          fi
+
+      - name: Go Vet
+        run: go vet ./...
+
+      - name: Golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.64
+
+      - name: Run Tests
+        run: go test -v ./...
+
+      - name: Run Tests with Race Detector
+        run: go test -race -v ./...
+
+  build-matrix:
+    name: Build Cross-Platform Matrix
+    needs: lint-and-test
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        goarch: [amd64, arm64]
+        exclude:
+          # Windows ARM64 is not targeted for release builds
+          - os: windows-latest
+            goarch: arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Build Binary
+        env:
+          CGO_ENABLED: 0
+          GOARCH: ${{ matrix.goarch }}
+        run: go build -v ./cmd/runnel

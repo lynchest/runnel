@@ -1,0 +1,241 @@
+package proxy
+
+import (
+	"context"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"runtime"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/lynchest/runnel/internal/circuit"
+	"github.com/lynchest/runnel/internal/queue"
+)
+
+func TestGatewaySingleflightFirstClientCancelOthersSurvive(t *testing.T) {
+	gateway := NewGateway(GatewayConfig{UpstreamTimeout: time.Second})
+	firstContext, cancelFirst := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var calls atomic.Int32
+	operation := func(context.Context) (GatewayResponse, error) {
+		if calls.Add(1) == 1 {
+			close(started)
+		}
+		<-release
+		return GatewayResponse{StatusCode: http.StatusOK, Body: []byte("shared")}, nil
+	}
+
+	firstResult := make(chan error, 1)
+	go func() {
+		_, err := gateway.Do(firstContext, "same-request", operation)
+		firstResult <- err
+	}()
+	<-started
+
+	const waiters = 19
+	results := make(chan error, waiters)
+	var wg sync.WaitGroup
+	wg.Add(waiters)
+	for i := 0; i < waiters; i++ {
+		go func() {
+			defer wg.Done()
+			_, err := gateway.Do(context.Background(), "same-request", operation)
+			results <- err
+		}()
+	}
+	// Give all callers a chance to enter DoChan before the leader is canceled.
+	time.Sleep(20 * time.Millisecond)
+	cancelFirst()
+	close(release)
+
+	if err := <-firstResult; !errors.Is(err, context.Canceled) {
+		t.Fatalf("first caller error = %v, want context canceled", err)
+	}
+	wg.Wait()
+	close(results)
+	for err := range results {
+		if err != nil {
+			t.Fatalf("waiting caller error = %v, want success", err)
+		}
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("shared operation calls = %d, want 1", got)
+	}
+}
+
+func TestGatewayNonIdempotentBoundedPathPreservesCancellation(t *testing.T) {
+	gateway := NewGateway(GatewayConfig{UpstreamTimeout: time.Second})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan struct{})
+	observed := make(chan error, 1)
+	done := make(chan error, 1)
+
+	go func() {
+		_, err := gateway.doBounded(ctx, func(workContext context.Context) (GatewayResponse, error) {
+			close(started)
+			<-workContext.Done()
+			observed <- workContext.Err()
+			return GatewayResponse{}, workContext.Err()
+		})
+		done <- err
+	}()
+
+	<-started
+	cancel()
+	select {
+	case err := <-observed:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("bounded operation context error = %v, want context canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("bounded operation did not observe caller cancellation")
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("bounded request error = %v, want context canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("bounded request did not return after caller cancellation")
+	}
+}
+
+func TestGatewayRedirectRelativeLocationRewritten(t *testing.T) {
+	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/start" {
+			return nil, errors.New("unexpected upstream path: " + r.URL.Path)
+		}
+		return &http.Response{
+			StatusCode: http.StatusFound,
+			Header:     http.Header{"Location": {"/v2/games"}},
+			Body:       io.NopCloser(strings.NewReader("")),
+			Request:    r,
+		}, nil
+	})
+	gateway := NewGateway(GatewayConfig{Client: &http.Client{Transport: transport}})
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/proxy?url="+url.QueryEscape("https://api.test.com/start"), nil)
+	gateway.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusFound {
+		t.Fatalf("gateway status = %d, want 302", recorder.Code)
+	}
+	want := "/proxy?url=" + url.QueryEscape("https://api.test.com/v2/games")
+	if got := recorder.Header().Get("Location"); got != want {
+		t.Fatalf("rewritten Location = %q, want %q", got, want)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestGatewayOpenCircuitRejectsNonIdempotentImmediately(t *testing.T) {
+	breaker := circuit.NewBreaker(circuit.Config{
+		InitialCooldown: time.Minute,
+		MaxCooldown:     time.Minute,
+	}, nil)
+	breaker.OnRateLimit(60)
+	q := queue.New(4, time.Second)
+	gateway := NewGateway(GatewayConfig{Breaker: breaker, Queue: q})
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/proxy?url=https%3A%2F%2Fapi.test%2Fwrite", nil)
+	gateway.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("POST status = %d, want 503", recorder.Code)
+	}
+	if got := recorder.Header().Get("Retry-After"); got != "60" {
+		t.Fatalf("POST Retry-After = %q, want 60", got)
+	}
+	if q.Len() != 0 {
+		t.Fatalf("POST was retained in queue, length = %d", q.Len())
+	}
+}
+
+func TestGatewayCanceledOpenCircuitWaitersAreRemoved(t *testing.T) {
+	breaker := circuit.NewBreaker(circuit.Config{
+		InitialCooldown: time.Minute,
+		MaxCooldown:     time.Minute,
+	}, nil)
+	breaker.OnRateLimit(60)
+	q := queue.New(200, time.Second)
+	gateway := NewGateway(GatewayConfig{Breaker: breaker, Queue: q})
+	baseline := runtime.NumGoroutine()
+	const callers = 100
+	var wg sync.WaitGroup
+	wg.Add(callers)
+	cancels := make([]context.CancelFunc, 0, callers)
+	var cancelMu sync.Mutex
+	for i := 0; i < callers; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancelMu.Lock()
+		cancels = append(cancels, cancel)
+		cancelMu.Unlock()
+		go func(ctx context.Context) {
+			defer wg.Done()
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodGet, "/proxy?url=https%3A%2F%2Fapi.test%2Fitems", nil).WithContext(ctx)
+			gateway.ServeHTTP(recorder, request)
+		}(ctx)
+	}
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for q.Len() < callers && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	cancelMu.Lock()
+	for _, cancel := range cancels {
+		cancel()
+	}
+	cancelMu.Unlock()
+	wg.Wait()
+	waitForProxyQueueLen(t, q, 0)
+
+	deadline = time.Now().Add(500 * time.Millisecond)
+	for runtime.NumGoroutine() > baseline+20 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := runtime.NumGoroutine(); got > baseline+20 {
+		t.Fatalf("goroutines after canceled gateway waiters = %d, baseline %d", got, baseline)
+	}
+}
+
+func TestGatewayQueueTimeoutIncludesRemainingRetryAfter(t *testing.T) {
+	breaker := circuit.NewBreaker(circuit.Config{
+		InitialCooldown: time.Minute,
+		MaxCooldown:     time.Minute,
+	}, nil)
+	breaker.OnRateLimit(60)
+	q := queue.New(1, 30*time.Millisecond)
+	gateway := NewGateway(GatewayConfig{Breaker: breaker, Queue: q})
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/proxy?url=https%3A%2F%2Fapi.test%2Fitems", nil)
+	gateway.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("queue timeout status = %d, want 503", recorder.Code)
+	}
+	if got, err := strconv.ParseInt(recorder.Header().Get("Retry-After"), 10, 64); err != nil || got < 1 {
+		t.Fatalf("queue timeout Retry-After = %q, want positive seconds", recorder.Header().Get("Retry-After"))
+	}
+}
+
+func waitForProxyQueueLen(t *testing.T, q *queue.Queue, want int) {
+	t.Helper()
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for q.Len() != want && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := q.Len(); got != want {
+		t.Fatalf("queue length = %d, want %d", got, want)
+	}
+}
