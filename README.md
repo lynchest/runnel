@@ -81,9 +81,29 @@ incoming request bodies are bounded by the configured 10 MB default.
 
 ## Installation
 
-Requirement: Go 1.22 or newer.
+> **Note for users and automated agents:** You do **not** need to install Go or build from source. Pre-compiled, zero-dependency binaries for Linux (`amd64`, `arm64`), macOS (`amd64`, `arm64`), and Windows are available in [GitHub Releases](https://github.com/lynchest/runnel/releases).
 
-### Build from source
+### Run a release binary (Recommended)
+
+Download and extract the archive for your platform from [GitHub Releases](https://github.com/lynchest/runnel/releases):
+
+```bash
+# Example for Linux AMD64 (or linux_arm64 / darwin_arm64 etc.)
+tar -xzf runnel_*_linux_amd64.tar.gz
+./runnel -config runnel.example.yaml
+```
+
+Or download via GitHub CLI:
+
+```bash
+gh release download -R lynchest/runnel --pattern "*linux_amd64.tar.gz"
+tar -xzf runnel_*_linux_amd64.tar.gz
+./runnel -config runnel.example.yaml
+```
+
+### Build from source (Developers)
+
+Requirement: Go 1.22 or newer.
 
 ```bash
 git clone https://github.com/lynchest/runnel.git
@@ -91,22 +111,13 @@ cd runnel
 go build -o bin/runnel ./cmd/runnel
 ```
 
-### Run a release binary
-
-Download the archive for your platform from [GitHub Releases](https://github.com/lynchest/runnel/releases):
-
-```bash
-tar -xzf runnel_*_linux_amd64.tar.gz
-chmod +x runnel
-./runnel -config runnel.example.yaml
-```
-
 ## Quick start
 
 With the default configuration, the service listens on `127.0.0.1:8090`:
 
 ```bash
-./bin/runnel
+./runnel -config runnel.example.yaml
+# (or ./bin/runnel if built from source)
 ```
 
 Send a request through the gateway:
