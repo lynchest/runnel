@@ -1,5 +1,11 @@
 # runnel
 
+[![CI](https://github.com/lynchest/runnel/actions/workflows/test.yml/badge.svg)](https://github.com/lynchest/runnel/actions/workflows/test.yml)
+[![Docker](https://github.com/lynchest/runnel/actions/workflows/docker.yml/badge.svg)](https://github.com/lynchest/runnel/pkgs/container/runnel)
+[![Release](https://img.shields.io/github/v/release/lynchest/runnel)](https://github.com/lynchest/runnel/releases)
+[![Go Report Card](https://goreportcard.com/badge/github.com/lynchest/runnel)](https://goreportcard.com/report/github.com/lynchest/runnel)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 > Architected & directed via agentic workflows; strictly tested & verified.
 
 `runnel` is a small HTTP egress gateway for controlling requests to
