@@ -66,3 +66,19 @@ func TestFingerprint_AcceptLanguageIsolation(t *testing.T) {
 		t.Fatal("Accept-Language did not change fingerprint")
 	}
 }
+
+func BenchmarkGatewayRequestKey(b *testing.B) {
+	req := httptest.NewRequest(http.MethodGet, "http://gateway.test/proxy?url=https://api.example.test/v1/items?page=1", nil)
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	req.Header.Set("Authorization", "Bearer token123")
+	req.AddCookie(&http.Cookie{Name: "sessionid", Value: "sess456"})
+	target, _ := req.URL.Parse("https://api.example.test/v1/items?page=1")
+
+	g := &Gateway{}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = g.requestKey(req, target)
+	}
+}

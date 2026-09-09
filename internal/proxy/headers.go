@@ -10,17 +10,17 @@ import (
 // RFC 7230 section 6.1 names the fixed hop-by-hop fields.  Trailer and
 // Trailers are both included because net/http and older upstreams use both
 // spellings in practice.
-var hopByHopHeaders = [...]string{
-	"Connection",
-	"Keep-Alive",
-	"Proxy-Authenticate",
-	"Proxy-Authorization",
-	"Proxy-Connection",
-	"TE",
-	"Trailer",
-	"Trailers",
-	"Transfer-Encoding",
-	"Upgrade",
+var hopByHopHeadersMap = map[string]struct{}{
+	"connection":          {},
+	"keep-alive":          {},
+	"proxy-authenticate":  {},
+	"proxy-authorization": {},
+	"proxy-connection":    {},
+	"te":                  {},
+	"trailer":             {},
+	"trailers":            {},
+	"transfer-encoding":   {},
+	"upgrade":             {},
 }
 
 // RemoveHopByHopHeaders removes RFC hop-by-hop headers from h.  It also
@@ -31,16 +31,18 @@ func RemoveHopByHopHeaders(h http.Header) {
 		return
 	}
 
-	connectionTokens := make(map[string]struct{})
+	var connectionTokens map[string]struct{}
 	for key, values := range h {
-		if !strings.EqualFold(key, "Connection") {
-			continue
-		}
-		for _, value := range values {
-			for _, token := range strings.Split(value, ",") {
-				token = strings.TrimSpace(token)
-				if token != "" {
-					connectionTokens[strings.ToLower(token)] = struct{}{}
+		if strings.EqualFold(key, "Connection") {
+			if connectionTokens == nil {
+				connectionTokens = make(map[string]struct{})
+			}
+			for _, value := range values {
+				for _, token := range strings.Split(value, ",") {
+					token = strings.TrimSpace(token)
+					if token != "" {
+						connectionTokens[strings.ToLower(token)] = struct{}{}
+					}
 				}
 			}
 		}
@@ -48,14 +50,8 @@ func RemoveHopByHopHeaders(h http.Header) {
 
 	for key := range h {
 		lowerKey := strings.ToLower(key)
-		remove := false
-		for _, standard := range hopByHopHeaders {
-			if lowerKey == strings.ToLower(standard) {
-				remove = true
-				break
-			}
-		}
-		if !remove {
+		_, remove := hopByHopHeadersMap[lowerKey]
+		if !remove && connectionTokens != nil {
 			_, remove = connectionTokens[lowerKey]
 		}
 		if remove {

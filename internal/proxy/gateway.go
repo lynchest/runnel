@@ -729,12 +729,10 @@ func gatewayRequestKey(r *http.Request, target *url.URL) string {
 }
 
 func gatewayRequestKeyWithCookies(r *http.Request, target *url.URL, authCookieNames []string) string {
-	clone := r.Clone(context.Background())
-	clone.URL = target
 	if len(authCookieNames) > 0 {
-		return Fingerprint(clone, authCookieNames)
+		return FingerprintWithTarget(r, target, authCookieNames)
 	}
-	return Fingerprint(clone)
+	return FingerprintWithTarget(r, target)
 }
 
 func requestWeight(r *http.Request) int64 {
