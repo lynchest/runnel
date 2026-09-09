@@ -111,7 +111,8 @@ func (buffer *DirtyBuffer) deleteIfMatch(entry CacheEntry) {
 func sameEntry(left, right CacheEntry) bool {
 	if left.Key != right.Key || left.StatusCode != right.StatusCode ||
 		!left.ExpiresAt.Equal(right.ExpiresAt) || !left.CreatedAt.Equal(right.CreatedAt) ||
-		!left.UpdatedAt.Equal(right.UpdatedAt) {
+		!left.UpdatedAt.Equal(right.UpdatedAt) || left.varySealed != right.varySealed ||
+		left.NoStale != right.NoStale || !equalVary(left.Vary, right.Vary) {
 		return false
 	}
 	if len(left.Body) != len(right.Body) {

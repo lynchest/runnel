@@ -18,11 +18,16 @@ When deploying `runnel`, adhere to the following baseline security controls:
   requests to loopback, RFC 1918 private subnets, link-local addresses, and cloud
   instance metadata endpoints (e.g., `169.254.169.254`).
 - **Domain Whitelisting:** Use `security.allowed_domains` to explicitly restrict
-  egress to known upstream hosts whenever possible.
+  egress to known upstream hosts whenever possible. A non-loopback bind
+  (`server.host` / `RUNNEL_HOST`) with an empty allowlist is refused at startup.
 - **Admin Endpoints:** Guard mutations (`POST /_circuit/reset`) with a strong
   `security.admin_token` or `RUNNEL_ADMIN_TOKEN`. When empty, mutation endpoints
   reject all requests with `403 Forbidden`. Do not expose `/_*` admin endpoints to
   untrusted networks.
+- **Shared Cache:** The gateway cache is shared across clients. Upstream
+  `no-store`, `private`, and `no-cache` responses are never stored,
+  `must-revalidate`/`proxy-revalidate` responses are never served stale,
+  and authenticated responses are isolated per credentials in the cache key.
 
 ## Reporting a Vulnerability
 

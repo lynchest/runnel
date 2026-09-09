@@ -32,7 +32,46 @@ var (
 	ErrWriterClosed    = errors.New("cache writer is closed")
 )
 
+// cacheHeadersEncodingVersion marks header documents that carry Vary
+// metadata. Rows written by older versions store a bare header map and
+// decode through the legacy path as unsealed entries.
+const cacheHeadersEncodingVersion = 1
+
+// cacheHeadersDocument is the versioned JSON encoding of the headers column.
+type cacheHeadersDocument struct {
+	Version int                 `json:"v"`
+	Headers map[string][]string `json:"headers"`
+	Vary    map[string]string   `json:"vary,omitempty"`
+	NoStale bool                `json:"no_stale,omitempty"`
+}
+
+func encodeCacheHeaders(entry CacheEntry) ([]byte, error) {
+	return json.Marshal(cacheHeadersDocument{
+		Version: cacheHeadersEncodingVersion,
+		Headers: map[string][]string(entry.Headers),
+		Vary:    entry.Vary,
+		NoStale: entry.NoStale,
+	})
+}
+
+func decodeCacheHeaders(raw string) (http.Header, map[string]string, bool, bool, error) {
+	var doc cacheHeadersDocument
+	if err := json.Unmarshal([]byte(raw), &doc); err == nil && doc.Version == cacheHeadersEncodingVersion {
+		return http.Header(doc.Headers), doc.Vary, doc.NoStale, true, nil
+	}
+	var legacy map[string][]string
+	if err := json.Unmarshal([]byte(raw), &legacy); err != nil {
+		return nil, nil, false, false, err
+	}
+	return http.Header(legacy), nil, false, false, nil
+}
+
 // CacheEntry is one typed HTTP response in the cache.
+//
+// Vary holds the request header values observed for the response Vary fields
+// at store time. A nil Vary with sealed metadata means the response carried
+// no Vary header; rows written before Vary tracking are unsealed and must be
+// treated as misses.
 type CacheEntry struct {
 	Key        string
 	StatusCode int
@@ -41,6 +80,26 @@ type CacheEntry struct {
 	ExpiresAt  time.Time
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
+	Vary       map[string]string
+	// NoStale forbids stale-while-open reuse (upstream must-revalidate or
+	// proxy-revalidate). Fresh hits are unaffected.
+	NoStale    bool
+	varySealed bool
+}
+
+// VaryKnown reports whether the entry carries Vary metadata written by the
+// current encoding. Legacy rows predate Vary tracking and are unsafe to
+// serve when the client set varies.
+func (entry CacheEntry) VaryKnown() bool {
+	return entry.varySealed
+}
+
+// WithVary returns a copy carrying the supplied Vary request values with
+// sealed metadata. A nil map records that the response had no Vary header.
+func (entry CacheEntry) WithVary(vary map[string]string) CacheEntry {
+	entry.Vary = cloneVary(vary)
+	entry.varySealed = true
+	return entry
 }
 
 // NewCacheEntry creates a 200 response entry with an optional expiry TTL.
@@ -57,7 +116,9 @@ func NewCacheEntry(key string, body []byte, ttl time.Duration) CacheEntry {
 	if ttl > 0 {
 		entry.ExpiresAt = now.Add(ttl)
 	}
-	return normalizeEntry(entry)
+	entry = normalizeEntry(entry)
+	entry.varySealed = true
+	return entry
 }
 
 // Valid reports whether the entry can be served at now. Zero expiry means no
@@ -82,6 +143,7 @@ func normalizeEntry(entry CacheEntry) CacheEntry {
 	}
 	entry.Headers = cloneHeader(entry.Headers)
 	entry.Body = cloneBytes(entry.Body)
+	entry.Vary = cloneVary(entry.Vary)
 	if entry.CreatedAt.IsZero() {
 		entry.CreatedAt = time.Now()
 	}
@@ -89,6 +151,29 @@ func normalizeEntry(entry CacheEntry) CacheEntry {
 		entry.UpdatedAt = entry.CreatedAt
 	}
 	return entry
+}
+
+func cloneVary(value map[string]string) map[string]string {
+	if value == nil {
+		return nil
+	}
+	result := make(map[string]string, len(value))
+	for key, val := range value {
+		result[key] = val
+	}
+	return result
+}
+
+func equalVary(left, right map[string]string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for key, val := range left {
+		if other, ok := right[key]; !ok || other != val {
+			return false
+		}
+	}
+	return true
 }
 
 func cloneBytes(value []byte) []byte {
@@ -154,7 +239,7 @@ func (repo *CacheRepository) Set(ctx context.Context, entry CacheEntry) error {
 	if err := validateKey(entry.Key); err != nil {
 		return err
 	}
-	headerJSON, err := json.Marshal(map[string][]string(entry.Headers))
+	headerJSON, err := encodeCacheHeaders(entry)
 	if err != nil {
 		return fmt.Errorf("encode cache headers: %w", err)
 	}
@@ -300,7 +385,7 @@ func (repo *CacheRepository) writeBatch(ctx context.Context, tasks []cacheWriteT
 			continue
 		}
 		entry := normalizeEntry(task.entry)
-		headerJSON, err := json.Marshal(map[string][]string(entry.Headers))
+		headerJSON, err := encodeCacheHeaders(entry)
 		if err != nil {
 			return fmt.Errorf("encode cache headers: %w", err)
 		}
@@ -337,17 +422,21 @@ func scanEntry(row *sql.Row, key string) (CacheEntry, bool, error) {
 		}
 		return CacheEntry{}, false, fmt.Errorf("scan cache entry %q: %w", key, err)
 	}
-	var headers map[string][]string
-	if err := json.Unmarshal([]byte(headerJSON), &headers); err != nil {
+	headers, vary, noStale, sealed, err := decodeCacheHeaders(headerJSON)
+	if err != nil {
 		return CacheEntry{}, false, fmt.Errorf("decode cache headers %q: %w", key, err)
 	}
-	return normalizeEntry(CacheEntry{
+	entry := normalizeEntry(CacheEntry{
 		Key:        key,
 		StatusCode: statusCode,
-		Headers:    http.Header(headers),
+		Headers:    headers,
 		Body:       body,
 		ExpiresAt:  readTime(expiresAt),
 		CreatedAt:  readTime(createdAt),
 		UpdatedAt:  readTime(updatedAt),
-	}), true, nil
+		Vary:       vary,
+		NoStale:    noStale,
+	})
+	entry.varySealed = sealed
+	return entry, true, nil
 }

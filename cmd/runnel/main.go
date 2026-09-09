@@ -148,6 +148,9 @@ func newApplication(cfg *config.Config, client *http.Client, resolver proxy.Reso
 	if err := copyConfig.Validate(); err != nil {
 		return nil, fmt.Errorf("validate application config: %w", err)
 	}
+	if err := checkPublicBind(&copyConfig); err != nil {
+		return nil, err
+	}
 	store, err := storage.OpenSQLite(copyConfig.Storage.DBPath)
 	if err != nil {
 		return nil, err
@@ -211,6 +214,7 @@ func newApplication(cfg *config.Config, client *http.Client, resolver proxy.Reso
 		CacheTTL:         time.Duration(copyConfig.Defaults.DefaultCacheTTLSec) * time.Second,
 		ServeStaleOnOpen: copyConfig.Defaults.ServeStaleOnOpen,
 		Metrics:          metrics,
+		Logger:           log.Default(),
 	})
 	app.admin = proxy.NewAdminHandler(proxy.AdminConfig{
 		Registry:    registry,
@@ -435,7 +439,7 @@ func (app *Application) limiterFor(domain string) proxy.RequestLimiter {
 			time.Duration(policy.JitterMaxMS)*time.Millisecond,
 		)))
 	}
-	rateLimiter := limiter.New(policy.RequestsPerSec, 1, options...)
+	rateLimiter := limiter.New(policy.RequestsPerSec, policy.Burst, options...)
 	app.limiters[canonical] = rateLimiter
 	return rateLimiter
 }
@@ -496,7 +500,7 @@ func (app *Application) runProbeWorker(ctx context.Context, domain string, reque
 		snapshot := breaker.Snapshot()
 		switch snapshot.State {
 		case circuit.StateClosed:
-			if !app.releaseQueued(ctx, breaker, requestQueue) {
+			if !app.releaseQueued(ctx, breaker, requestQueue, domain) {
 				return
 			}
 		case circuit.StateOpen:
@@ -506,13 +510,13 @@ func (app *Application) runProbeWorker(ctx context.Context, domain string, reque
 				}
 				continue
 			}
-			app.releaseProbe(ctx, breaker, requestQueue, selector)
+			app.releaseProbe(ctx, breaker, requestQueue, domain, selector)
 			if !waitForProbeWorker(ctx, probeWorkerRetryWait) {
 				return
 			}
 		case circuit.StateHalfOpen:
 			if !snapshot.ProbeInFlight {
-				app.releaseProbe(ctx, breaker, requestQueue, selector)
+				app.releaseProbe(ctx, breaker, requestQueue, domain, selector)
 				if !waitForProbeWorker(ctx, probeWorkerRetryWait) {
 					return
 				}
@@ -525,7 +529,7 @@ func (app *Application) runProbeWorker(ctx context.Context, domain string, reque
 	}
 }
 
-func (app *Application) releaseProbe(ctx context.Context, breaker *circuit.Breaker, requestQueue *queue.Queue, selector *proxy.ProbeSelector) {
+func (app *Application) releaseProbe(ctx context.Context, breaker *circuit.Breaker, requestQueue *queue.Queue, domain string, selector *proxy.ProbeSelector) {
 	probeContext, cancel := context.WithTimeout(ctx, probeWorkerTakeWait)
 	defer cancel()
 	_, err := requestQueue.TakeLightestGETWith(probeContext, func(item *queue.Item) error {
@@ -543,14 +547,14 @@ func (app *Application) releaseProbe(ctx context.Context, breaker *circuit.Break
 		return nil
 	})
 	if app.metrics != nil {
-		app.metrics.SetQueueDepth(requestQueue.Len())
+		app.metrics.SetQueueDepth(domain, requestQueue.Len())
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return
 	}
 }
 
-func (app *Application) releaseQueued(ctx context.Context, breaker *circuit.Breaker, requestQueue *queue.Queue) bool {
+func (app *Application) releaseQueued(ctx context.Context, breaker *circuit.Breaker, requestQueue *queue.Queue, domain string) bool {
 	for requestQueue.Len() > 0 && breaker.State() == circuit.StateClosed {
 		takeContext, cancel := context.WithTimeout(ctx, probeWorkerTakeWait)
 		_, err := requestQueue.Take(takeContext)
@@ -565,7 +569,7 @@ func (app *Application) releaseQueued(ctx context.Context, breaker *circuit.Brea
 			return true
 		}
 		if app.metrics != nil {
-			app.metrics.SetQueueDepth(requestQueue.Len())
+			app.metrics.SetQueueDepth(domain, requestQueue.Len())
 		}
 	}
 	return ctx.Err() == nil
@@ -608,6 +612,9 @@ func (app *Application) domainPolicy(domain string) config.DomainDefaults {
 		}
 		if override.RequestsPerSec > 0 {
 			policy.RequestsPerSec = override.RequestsPerSec
+		}
+		if override.Burst > 0 {
+			policy.Burst = override.Burst
 		}
 		if override.JitterMinMS > 0 {
 			policy.JitterMinMS = override.JitterMinMS
@@ -662,6 +669,40 @@ func (app *Application) health(ctx context.Context) error {
 
 func canonicalDomain(domain string) string {
 	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
+}
+
+// checkPublicBind refuses a non-loopback listener without an explicit domain
+// allowlist. The default loopback bind stays unrestricted; exposing the
+// gateway (including /proxy) beyond loopback with empty allowed_domains would
+// create an open egress proxy, so that combination fails closed at startup.
+func checkPublicBind(cfg *config.Config) error {
+	if cfg == nil {
+		return nil
+	}
+	if isLoopbackBind(cfg.Server.Host) {
+		return nil
+	}
+	for _, domain := range cfg.Security.AllowedDomains {
+		if strings.TrimSpace(domain) != "" {
+			return nil
+		}
+	}
+	return fmt.Errorf("refusing non-loopback bind %q with empty security.allowed_domains: set allowed_domains to restrict egress before exposing runnel beyond loopback", strings.TrimSpace(cfg.Server.Host))
+}
+
+// isLoopbackBind reports whether host keeps the listener on loopback. Empty
+// selects the documented loopback default. Unparsable hostnames are treated
+// as non-loopback so novel exposures fail closed when no allowlist is set.
+func isLoopbackBind(host string) bool {
+	h := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if h == "" || h == "localhost" {
+		return true
+	}
+	h = strings.TrimPrefix(strings.TrimSuffix(h, "]"), "[")
+	if ip := net.ParseIP(h); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 func domainMatchRank(domain, pattern string) (int, int, bool) {

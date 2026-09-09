@@ -31,6 +31,7 @@ const (
 	DefaultCooldownMultiplier = 2.0
 	DefaultCooldownMaxSec     = 7200
 	DefaultRequestsPerSec     = 0.5
+	DefaultBurst              = 1
 	DefaultJitterMinMS        = 200
 	DefaultJitterMaxMS        = 800
 	DefaultQueueMaxSize       = 200
@@ -87,6 +88,7 @@ type DomainDefaults struct {
 	CooldownMultiplier float64 `yaml:"cooldown_multiplier"`
 	CooldownMaxSec     int     `yaml:"cooldown_max_sec"`
 	RequestsPerSec     float64 `yaml:"requests_per_sec"`
+	Burst              int     `yaml:"burst"`
 	JitterMinMS        int     `yaml:"jitter_min_ms"`
 	JitterMaxMS        int     `yaml:"jitter_max_ms"`
 	QueueMaxSize       int     `yaml:"queue_max_size"`
@@ -103,6 +105,7 @@ type DomainConfig struct {
 	CooldownMultiplier float64  `yaml:"cooldown_multiplier,omitempty"`
 	CooldownMaxSec     int      `yaml:"cooldown_max_sec,omitempty"`
 	RequestsPerSec     float64  `yaml:"requests_per_sec,omitempty"`
+	Burst              int      `yaml:"burst,omitempty"`
 	JitterMinMS        int      `yaml:"jitter_min_ms,omitempty"`
 	JitterMaxMS        int      `yaml:"jitter_max_ms,omitempty"`
 	QueueMaxSize       int      `yaml:"queue_max_size,omitempty"`
@@ -138,6 +141,7 @@ func NewDefaultConfig() *Config {
 			CooldownMultiplier: DefaultCooldownMultiplier,
 			CooldownMaxSec:     DefaultCooldownMaxSec,
 			RequestsPerSec:     DefaultRequestsPerSec,
+			Burst:              DefaultBurst,
 			JitterMinMS:        DefaultJitterMinMS,
 			JitterMaxMS:        DefaultJitterMaxMS,
 			QueueMaxSize:       DefaultQueueMaxSize,
@@ -236,6 +240,9 @@ func (c *Config) Validate() error {
 		if d.RequestsPerSec < 0 {
 			return fmt.Errorf("domains[%d].requests_per_sec cannot be negative", i)
 		}
+		if d.Burst < 0 {
+			return fmt.Errorf("domains[%d].burst cannot be negative", i)
+		}
 		if d.JitterMinMS < 0 || d.JitterMaxMS < 0 {
 			return fmt.Errorf("domains[%d] jitter values cannot be negative", i)
 		}
@@ -265,6 +272,9 @@ func validateDefaults(d *DomainDefaults) error {
 	}
 	if d.RequestsPerSec <= 0 {
 		return fmt.Errorf("requests_per_sec must be positive, got %f", d.RequestsPerSec)
+	}
+	if d.Burst < 1 {
+		return fmt.Errorf("burst must be at least 1, got %d", d.Burst)
 	}
 	if d.JitterMinMS < 0 {
 		return fmt.Errorf("jitter_min_ms cannot be negative, got %d", d.JitterMinMS)

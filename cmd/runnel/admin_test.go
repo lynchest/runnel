@@ -188,6 +188,7 @@ func TestNewApplicationEnvironmentOverrides(t *testing.T) {
 	t.Setenv("RUNNEL_ADMIN_TOKEN", "env-secret")
 
 	cfg := testConfig(t)
+	cfg.Security.AllowedDomains = []string{"example.com"}
 	app, err := NewApplication(cfg)
 	if err != nil {
 		t.Fatal(err)

@@ -5,8 +5,10 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -14,8 +16,11 @@ import (
 )
 
 // Metrics contains the process counters exposed by the administrative
-// metrics endpoint. The counters are deliberately small and typed so request
-// handlers can update them without taking a shared mutex.
+// metrics endpoint. The global counters are deliberately small and typed so
+// request handlers can update them without taking a shared mutex.
+// Per-domain counters live behind a bounded map (see maxTrackedDomains) so
+// an empty domain allowlist cannot grow memory or scrape size without limit;
+// domains beyond the bound still feed the global counters.
 type Metrics struct {
 	RequestsTotal         atomic.Uint64
 	CacheHitsTotal        atomic.Uint64
@@ -28,7 +33,42 @@ type Metrics struct {
 	RateLimitedTotal      atomic.Uint64
 	CircuitRejectedTotal  atomic.Uint64
 	QueueRejectedTotal    atomic.Uint64
-	queueDepth            atomic.Int64
+	droppedDomains        atomic.Uint64
+	// totalQueueDepth is the exact sum of last-reported per-domain depths,
+	// maintained by Swap deltas so the global gauge does not depend on the
+	// bounded series map. Domains beyond the tracking bound still miss
+	// here; tracking them exactly would need unbounded memory, which is
+	// what the bound exists to prevent.
+	totalQueueDepth atomic.Int64
+
+	domainMu sync.Mutex
+	domains  map[string]*DomainMetrics
+}
+
+// maxTrackedDomains bounds per-domain metric series. Untracked domains keep
+// working and keep feeding the global counters; only their domain-labelled
+// breakdown is missing, counted by DroppedDomains.
+const maxTrackedDomains = 256
+
+// DomainMetrics holds one domain's counters. Fields are atomic so handlers
+// update them without holding the parent map lock.
+type DomainMetrics struct {
+	UpstreamRequests    atomic.Uint64
+	UpstreamErrors      atomic.Uint64
+	UpstreamRateLimited atomic.Uint64
+	CircuitRejected     atomic.Uint64
+	QueueRejected       atomic.Uint64
+	QueueDepth          atomic.Int64
+}
+
+// DomainMetricsSnapshot is an atomically captured view of DomainMetrics.
+type DomainMetricsSnapshot struct {
+	UpstreamRequests    uint64
+	UpstreamErrors      uint64
+	UpstreamRateLimited uint64
+	CircuitRejected     uint64
+	QueueRejected       uint64
+	QueueDepth          int64
 }
 
 // MetricsSnapshot is an atomically captured view of Metrics.
@@ -45,6 +85,41 @@ type MetricsSnapshot struct {
 	CircuitRejectedTotal  uint64
 	QueueRejectedTotal    uint64
 	QueueDepth            int64
+	DroppedDomains        uint64
+	Domains               map[string]DomainMetricsSnapshot
+}
+
+// normalizeMetricDomain canonicalizes a domain for metric labelling.
+func normalizeMetricDomain(domain string) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
+}
+
+// Domain returns the counters for domain, creating them on first use. It
+// returns nil once the tracking bound is reached; callers must handle nil by
+// relying on the global counters alone.
+func (m *Metrics) Domain(domain string) *DomainMetrics {
+	if m == nil {
+		return nil
+	}
+	name := normalizeMetricDomain(domain)
+	if name == "" {
+		return nil
+	}
+	m.domainMu.Lock()
+	defer m.domainMu.Unlock()
+	if dm := m.domains[name]; dm != nil {
+		return dm
+	}
+	if len(m.domains) >= maxTrackedDomains {
+		m.droppedDomains.Add(1)
+		return nil
+	}
+	if m.domains == nil {
+		m.domains = make(map[string]*DomainMetrics)
+	}
+	dm := &DomainMetrics{}
+	m.domains[name] = dm
+	return dm
 }
 
 // Snapshot returns all counters at one instant.
@@ -52,7 +127,7 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 	if m == nil {
 		return MetricsSnapshot{}
 	}
-	return MetricsSnapshot{
+	snapshot := MetricsSnapshot{
 		RequestsTotal:         m.RequestsTotal.Load(),
 		CacheHitsTotal:        m.CacheHitsTotal.Load(),
 		CacheMissesTotal:      m.CacheMissesTotal.Load(),
@@ -64,19 +139,51 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 		RateLimitedTotal:      m.RateLimitedTotal.Load(),
 		CircuitRejectedTotal:  m.CircuitRejectedTotal.Load(),
 		QueueRejectedTotal:    m.QueueRejectedTotal.Load(),
-		QueueDepth:            m.queueDepth.Load(),
+		DroppedDomains:        m.droppedDomains.Load(),
+		QueueDepth:            max(m.totalQueueDepth.Load(), 0),
+		Domains:               make(map[string]DomainMetricsSnapshot),
 	}
+	m.domainMu.Lock()
+	for name, dm := range m.domains {
+		if dm == nil {
+			continue
+		}
+		depth := dm.QueueDepth.Load()
+		if depth < 0 {
+			depth = 0
+		}
+		snapshot.Domains[name] = DomainMetricsSnapshot{
+			UpstreamRequests:    dm.UpstreamRequests.Load(),
+			UpstreamErrors:      dm.UpstreamErrors.Load(),
+			UpstreamRateLimited: dm.UpstreamRateLimited.Load(),
+			CircuitRejected:     dm.CircuitRejected.Load(),
+			QueueRejected:       dm.QueueRejected.Load(),
+			QueueDepth:          depth,
+		}
+	}
+	m.domainMu.Unlock()
+	return snapshot
 }
 
-// SetQueueDepth updates the queue depth gauge shown in /_metrics.
-func (m *Metrics) SetQueueDepth(depth int) {
-	if m == nil {
+// SetQueueDepth records one domain queue's depth and folds the delta into
+// the global total, which therefore stays exact without scanning the
+// bounded series map.
+func (m *Metrics) SetQueueDepth(domain string, depth int) {
+	dm := m.Domain(domain)
+	if dm == nil {
 		return
 	}
 	if depth < 0 {
 		depth = 0
 	}
-	m.queueDepth.Store(int64(depth))
+	previous := dm.QueueDepth.Swap(int64(depth))
+	m.totalQueueDepth.Add(int64(depth) - previous)
+}
+
+// escapeLabelValue escapes a Prometheus label value.
+func escapeLabelValue(value string) string {
+	replacer := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`)
+	return replacer.Replace(value)
 }
 
 // AdminConfig wires the administrative endpoints to application state.
@@ -194,6 +301,28 @@ func (handler *AdminHandler) metricsEndpoint(w http.ResponseWriter, r *http.Requ
 	writeMetric("runnel_circuit_rejected_total", snapshot.CircuitRejectedTotal)
 	writeMetric("runnel_queue_rejected_total", snapshot.QueueRejectedTotal)
 	_, _ = w.Write([]byte("runnel_queue_depth " + strconv.FormatInt(snapshot.QueueDepth, 10) + "\n"))
+	writeMetric("runnel_metrics_dropped_domains_total", snapshot.DroppedDomains)
+	names := make([]string, 0, len(snapshot.Domains))
+	for name := range snapshot.Domains {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		dm := snapshot.Domains[name]
+		label := `{domain="` + escapeLabelValue(name) + `"}`
+		writeMetric("runnel_upstream_requests_total"+label, dm.UpstreamRequests)
+		writeMetric("runnel_upstream_errors_total"+label, dm.UpstreamErrors)
+		writeMetric("runnel_upstream_rate_limited_total"+label, dm.UpstreamRateLimited)
+		writeMetric("runnel_circuit_rejected_total"+label, dm.CircuitRejected)
+		writeMetric("runnel_queue_rejected_total"+label, dm.QueueRejected)
+		_, _ = w.Write([]byte("runnel_queue_depth" + label + " " + strconv.FormatInt(dm.QueueDepth, 10) + "\n"))
+		if handler != nil && handler.registry != nil {
+			if breaker, ok := handler.registry.Lookup(name); ok && breaker != nil {
+				state := string(breaker.State())
+				_, _ = w.Write([]byte(`runnel_circuit_state{domain="` + escapeLabelValue(name) + `",state="` + state + `"} 1` + "\n"))
+			}
+		}
+	}
 }
 
 func (handler *AdminHandler) reset(w http.ResponseWriter, r *http.Request) {

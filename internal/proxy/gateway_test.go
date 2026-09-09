@@ -24,9 +24,15 @@ type memoryResponseCache struct {
 	entry storage.CacheEntry
 	hit   bool
 	sets  int
+	// staleOnly makes Get miss while GetStale still hits, modelling an
+	// expired durable row for stale-fallback tests.
+	staleOnly bool
 }
 
 func (c *memoryResponseCache) Get(context.Context, string) (storage.CacheEntry, bool, error) {
+	if c.staleOnly {
+		return storage.CacheEntry{}, false, nil
+	}
 	return c.entry.Clone(), c.hit, nil
 }
 

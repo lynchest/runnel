@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -98,6 +99,7 @@ type GatewayConfig struct {
 	CacheTTL         time.Duration
 	ServeStaleOnOpen bool
 	Metrics          *Metrics
+	Logger           *log.Logger
 }
 
 // Gateway is an HTTP handler for /proxy?url=... and a typed singleflight
@@ -119,6 +121,7 @@ type Gateway struct {
 	cacheTTL         time.Duration
 	serveStaleOnOpen bool
 	metrics          *Metrics
+	logger           *log.Logger
 	requestGroup     singleflight.Group
 }
 
@@ -169,6 +172,7 @@ func NewGateway(config GatewayConfig) *Gateway {
 		cacheTTL:         config.CacheTTL,
 		serveStaleOnOpen: config.ServeStaleOnOpen,
 		metrics:          config.Metrics,
+		logger:           config.Logger,
 	}
 }
 
@@ -237,6 +241,27 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if g.metrics != nil {
 		g.metrics.RequestsTotal.Add(1)
 	}
+	requestID := validatedRequestID(r.Header.Get("X-Request-ID"))
+	if requestID == "" {
+		requestID = newRequestID()
+	}
+	w.Header().Set("X-Request-ID", requestID)
+	r = r.WithContext(context.WithValue(r.Context(), gatewayRequestIDKey{}, requestID))
+	recorder := &statusRecorder{ResponseWriter: w}
+	w = recorder
+	var (
+		domain      string
+		cacheResult = "bypass"
+		errClass    string
+	)
+	start := time.Now()
+	defer func() {
+		class := statusClass(recorder.status)
+		if errClass != "" {
+			class = errClass
+		}
+		g.logProxyAccess(r.Method, domain, recorder.status, time.Since(start), cacheResult, class, requestID)
+	}()
 	if g.enableCORS {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		if WriteCORSPreflight(w, r) {
@@ -264,7 +289,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	key := g.requestKey(r, target)
-	domain := target.Hostname()
+	domain = target.Hostname()
 	cacheable := isCacheableMethod(r.Method)
 	bypassCache := requestsCacheBypass(r)
 	if cacheable && !bypassCache && g.cache != nil && g.cacheTTL > 0 {
@@ -273,23 +298,26 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if g.metrics != nil {
 				g.metrics.CacheErrorsTotal.Add(1)
 			}
-		} else if hit && isCacheableResponseStatus(entry.StatusCode) {
+		} else if hit && isCacheableResponseStatus(entry.StatusCode) && cacheVaryMatches(entry, r) {
 			if g.metrics != nil {
 				g.metrics.CacheHitsTotal.Add(1)
 			}
 			writeCacheEntry(w, entry, "HIT")
+			cacheResult = "hit"
 			return
 		} else if g.metrics != nil {
 			g.metrics.CacheMissesTotal.Add(1)
 		}
+		cacheResult = "miss"
 	}
 
 	breaker := g.breakerForDomain(domain)
 	requestQueue := g.queueForDomain(domain)
 	if g.serveStaleOnOpen && cacheable && g.cacheTTL > 0 && g.serveStale(w, r, key, breaker) {
+		cacheResult = "stale"
 		return
 	}
-	if !g.admitWith(w, r, breaker, requestQueue) {
+	if !g.admitWith(w, r, breaker, requestQueue, domain) {
 		return
 	}
 	if limiter := g.limiterForDomain(domain); limiter != nil {
@@ -315,6 +343,9 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if g.metrics != nil {
 			g.metrics.CircuitRejectedTotal.Add(1)
 		}
+		if dm := g.domainMetrics(domain); dm != nil {
+			dm.CircuitRejected.Add(1)
+		}
 		writeUnavailable(w, postLimitSnapshot.RemainingCooldown)
 		return
 	}
@@ -326,13 +357,20 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if isNonIdempotentMethod(r.Method) {
 		response, err = g.doBounded(r.Context(), fetch)
 	} else {
-		response, err = g.Do(r.Context(), key, fetch)
+		// Coalesce on the header-aware flight key, not the cache key:
+		// upstream Vary is unknown before the fetch, so requests with
+		// different headers must not share one upstream response.
+		response, err = g.Do(r.Context(), g.singleflightKey(r, target), fetch)
 	}
 	if err != nil {
 		if r.Context().Err() != nil {
 			return
 		}
+		if class, ok := upstreamClassOf(err); ok {
+			errClass = class
+		}
 		if g.serveStaleOnOpen && cacheable && g.cacheTTL > 0 && g.serveStale(w, r, key, breaker) {
+			cacheResult = "stale"
 			return
 		}
 		status := http.StatusBadGateway
@@ -347,19 +385,25 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			response.Header = make(http.Header)
 		}
 		response.Header.Set("X-Cache", "MISS")
-		cacheHeaders := response.Header.Clone()
-		stripSensitiveCacheHeaders(cacheHeaders)
-		entry := storage.CacheEntry{
-			Key:        key,
-			StatusCode: response.StatusCode,
-			Headers:    cacheHeaders,
-			Body:       append([]byte(nil), response.Body...),
-			ExpiresAt:  time.Now().Add(g.cacheTTL),
-			CreatedAt:  time.Now(),
-			UpdatedAt:  time.Now(),
-		}
-		if err := g.cache.Set(r.Context(), entry); err != nil && g.metrics != nil {
-			g.metrics.CacheWriteErrorsTotal.Add(1)
+		now := time.Now()
+		ttl, cacheableResponse := responseCacheTTL(response.Header, g.cacheTTL, now)
+		varyFields, varyStar := parseVaryFields(response.Header)
+		if cacheableResponse && !varyStar && !varyIncludesRequestID(varyFields) {
+			cacheHeaders := response.Header.Clone()
+			stripSensitiveCacheHeaders(cacheHeaders)
+			entry := storage.CacheEntry{
+				Key:        key,
+				StatusCode: response.StatusCode,
+				Headers:    cacheHeaders,
+				Body:       append([]byte(nil), response.Body...),
+				ExpiresAt:  now.Add(ttl),
+				CreatedAt:  now,
+				UpdatedAt:  now,
+				NoStale:    responseMustRevalidate(response.Header),
+			}.WithVary(varyRequestSnapshot(r, varyFields))
+			if err := g.cache.Set(r.Context(), entry); err != nil && g.metrics != nil {
+				g.metrics.CacheWriteErrorsTotal.Add(1)
+			}
 		}
 	}
 	writeGatewayResponse(w, response)
@@ -450,6 +494,16 @@ func (g *Gateway) queueForDomain(domain string) *queue.Queue {
 	return g.requestQueue
 }
 
+// domainMetrics returns the per-domain counters for domain. A nil result
+// means metrics are disabled or the tracking bound is reached; callers fall
+// back to the global counters alone.
+func (g *Gateway) domainMetrics(domain string) *DomainMetrics {
+	if g == nil {
+		return nil
+	}
+	return g.metrics.Domain(domain)
+}
+
 func (g *Gateway) requestKey(r *http.Request, target *url.URL) string {
 	if g == nil || g.authCookiesFor == nil || target == nil {
 		return gatewayRequestKey(r, target)
@@ -466,7 +520,7 @@ func (g *Gateway) serveStale(w http.ResponseWriter, r *http.Request, key string,
 		return false
 	}
 	entry, hit, err := g.cache.GetStale(r.Context(), key)
-	if err != nil || !hit || !isCacheableResponseStatus(entry.StatusCode) {
+	if err != nil || !hit || !isCacheableResponseStatus(entry.StatusCode) || !cacheVaryMatches(entry, r) {
 		return false
 	}
 	if entry.Valid(time.Now()) {
@@ -475,6 +529,11 @@ func (g *Gateway) serveStale(w http.ResponseWriter, r *http.Request, key string,
 		}
 		writeCacheEntry(w, entry, "HIT")
 		return true
+	}
+	if entry.NoStale {
+		// Upstream must-revalidate/proxy-revalidate forbids stale reuse
+		// without revalidation, which this gateway does not implement.
+		return false
 	}
 	if g.metrics != nil {
 		g.metrics.CacheStaleHitsTotal.Add(1)
@@ -499,14 +558,14 @@ func requestsCacheBypass(r *http.Request) bool {
 	return strings.EqualFold(strings.TrimSpace(r.Header.Get("Pragma")), "no-cache")
 }
 
-func (g *Gateway) admitWith(w http.ResponseWriter, r *http.Request, breaker *circuit.Breaker, requestQueue *queue.Queue) bool {
+func (g *Gateway) admitWith(w http.ResponseWriter, r *http.Request, breaker *circuit.Breaker, requestQueue *queue.Queue, domain string) bool {
 	if breaker == nil {
 		return true
 	}
 	snapshot := breaker.Snapshot()
 	if snapshot.State == circuit.StateClosed {
 		if !breaker.CanExecute() {
-			return g.waitInQueueWithQueue(w, r, requestQueue, snapshot.RemainingCooldown)
+			return g.waitInQueueWithQueue(w, r, requestQueue, snapshot.RemainingCooldown, domain)
 		}
 		return true
 	}
@@ -517,6 +576,9 @@ func (g *Gateway) admitWith(w http.ResponseWriter, r *http.Request, breaker *cir
 		if g.metrics != nil {
 			g.metrics.CircuitRejectedTotal.Add(1)
 		}
+		if dm := g.domainMetrics(domain); dm != nil {
+			dm.CircuitRejected.Add(1)
+		}
 		writeUnavailable(w, snapshot.RemainingCooldown)
 		return false
 	}
@@ -525,20 +587,23 @@ func (g *Gateway) admitWith(w http.ResponseWriter, r *http.Request, breaker *cir
 			if breaker.CanExecute() {
 				return true
 			}
-			return g.waitInQueueWithQueue(w, r, requestQueue, 0)
+			return g.waitInQueueWithQueue(w, r, requestQueue, 0, domain)
 		}
-		return g.waitInQueueWithQueue(w, r, requestQueue, snapshot.RemainingCooldown)
+		return g.waitInQueueWithQueue(w, r, requestQueue, snapshot.RemainingCooldown, domain)
 	}
 	if breaker.CanExecute() {
 		return true
 	}
-	return g.waitInQueueWithQueue(w, r, requestQueue, snapshot.RemainingCooldown)
+	return g.waitInQueueWithQueue(w, r, requestQueue, snapshot.RemainingCooldown, domain)
 }
 
-func (g *Gateway) waitInQueueWithQueue(w http.ResponseWriter, r *http.Request, requestQueue *queue.Queue, retryAfter time.Duration) bool {
+func (g *Gateway) waitInQueueWithQueue(w http.ResponseWriter, r *http.Request, requestQueue *queue.Queue, retryAfter time.Duration, domain string) bool {
 	if requestQueue == nil {
 		if g.metrics != nil {
 			g.metrics.QueueRejectedTotal.Add(1)
+		}
+		if dm := g.domainMetrics(domain); dm != nil {
+			dm.QueueRejected.Add(1)
 		}
 		writeUnavailable(w, retryAfter)
 		return false
@@ -554,6 +619,9 @@ func (g *Gateway) waitInQueueWithQueue(w http.ResponseWriter, r *http.Request, r
 			if g.metrics != nil {
 				g.metrics.QueueRejectedTotal.Add(1)
 			}
+			if dm := g.domainMetrics(domain); dm != nil {
+				dm.QueueRejected.Add(1)
+			}
 			writeUnavailable(w, retryAfter)
 			return false
 		}
@@ -561,11 +629,11 @@ func (g *Gateway) waitInQueueWithQueue(w http.ResponseWriter, r *http.Request, r
 		return false
 	}
 	if g.metrics != nil {
-		g.metrics.SetQueueDepth(requestQueue.Len())
+		g.metrics.SetQueueDepth(domain, requestQueue.Len())
 	}
 	err = requestQueue.Wait(r.Context(), ticket)
 	if g.metrics != nil {
-		g.metrics.SetQueueDepth(requestQueue.Len())
+		g.metrics.SetQueueDepth(domain, requestQueue.Len())
 	}
 	if err == nil {
 		return true
@@ -590,6 +658,18 @@ func (g *Gateway) fetchWithBreaker(ctx context.Context, original *http.Request, 
 	if g.metrics != nil {
 		g.metrics.UpstreamRequestsTotal.Add(1)
 	}
+	domainMetrics := g.domainMetrics(target.Hostname())
+	if domainMetrics != nil {
+		domainMetrics.UpstreamRequests.Add(1)
+	}
+	noteUpstreamError := func() {
+		if g.metrics != nil {
+			g.metrics.UpstreamErrorsTotal.Add(1)
+		}
+		if domainMetrics != nil {
+			domainMetrics.UpstreamErrors.Add(1)
+		}
+	}
 	outbound := original.Clone(ctx)
 	targetCopy := *target
 	outbound.URL = &targetCopy
@@ -598,6 +678,9 @@ func (g *Gateway) fetchWithBreaker(ctx context.Context, original *http.Request, 
 		return GatewayResponse{}, err
 	}
 	StripHopByHopRequest(outbound)
+	if requestID, ok := requestIDFromContext(ctx); ok {
+		outbound.Header.Set("X-Request-ID", requestID)
+	}
 
 	client := g.client
 	if client == nil {
@@ -610,18 +693,14 @@ func (g *Gateway) fetchWithBreaker(ctx context.Context, original *http.Request, 
 	}
 	response, err := client.Do(outbound)
 	if err != nil {
-		if g.metrics != nil {
-			g.metrics.UpstreamErrorsTotal.Add(1)
-		}
+		noteUpstreamError()
 		if breaker != nil {
 			breaker.OnFailure()
 		}
-		return GatewayResponse{}, err
+		return GatewayResponse{}, withUpstreamClass(err, classifyTransportError(err))
 	}
 	if response == nil {
-		if g.metrics != nil {
-			g.metrics.UpstreamErrorsTotal.Add(1)
-		}
+		noteUpstreamError()
 		if breaker != nil {
 			breaker.OnFailure()
 		}
@@ -645,22 +724,18 @@ func (g *Gateway) fetchWithBreaker(ctx context.Context, original *http.Request, 
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxGatewayResponseBytes+1))
 	if err != nil {
-		if g.metrics != nil {
-			g.metrics.UpstreamErrorsTotal.Add(1)
-		}
+		noteUpstreamError()
 		if breaker != nil {
 			breaker.OnFailure()
 		}
-		return GatewayResponse{}, err
+		return GatewayResponse{}, withUpstreamClass(err, "response_read_error")
 	}
 	if int64(len(body)) > maxGatewayResponseBytes {
-		if g.metrics != nil {
-			g.metrics.UpstreamErrorsTotal.Add(1)
-		}
+		noteUpstreamError()
 		if breaker != nil {
 			breaker.OnFailure()
 		}
-		return GatewayResponse{}, ErrGatewayResponseTooLarge
+		return GatewayResponse{}, withUpstreamClass(ErrGatewayResponseTooLarge, "response_too_large")
 	}
 	result = GatewayResponse{StatusCode: response.StatusCode, Header: cloneHeader(response.Header), Body: body}
 	RemoveHopByHopHeaders(result.Header)
@@ -669,6 +744,9 @@ func (g *Gateway) fetchWithBreaker(ctx context.Context, original *http.Request, 
 		case response.StatusCode == http.StatusTooManyRequests || response.StatusCode == http.StatusServiceUnavailable:
 			if g.metrics != nil {
 				g.metrics.RateLimitedTotal.Add(1)
+			}
+			if domainMetrics != nil {
+				domainMetrics.UpstreamRateLimited.Add(1)
 			}
 			breaker.OnRateLimitHeader(response.Header.Get("Retry-After"))
 		case response.StatusCode >= http.StatusInternalServerError:

@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+- Refuse startup on a non-loopback bind (`server.host` / `RUNNEL_HOST`) with
+  empty `security.allowed_domains`. The loopback default is unchanged.
+- Honor upstream `Cache-Control` (`no-store`, `private`, `no-cache` are never
+  stored; `s-maxage`/`max-age`/`Expires` shorten freshness under the
+  configured TTL cap) and `Vary` (`Vary: *` is never stored; other fields
+  must match the request for a HIT). Concurrent requests with different
+  headers never share one singleflight upstream fetch, except per-request
+  unique `X-Request-ID` (responses varying on it are never cached).
+  Response age (`Age` header and `Date` skew) is subtracted from the
+  lifetime; ambiguous freshness directives (unparseable or conflicting
+  repeats) refuse the store. Rows written before Vary tracking safely
+  miss until rewritten.
+- `must-revalidate`/`proxy-revalidate` responses may serve fresh hits but
+  are never served stale while a circuit is open.
+
+### Added
+- Per-domain metrics with `domain` labels (upstream requests/errors,
+  upstream 429/503, circuit and queue rejections, queue depth) plus
+  `runnel_circuit_state` and a bounded tracker (max 256 domains;
+  overflow counted in `runnel_metrics_dropped_domains_total`).
+- Single-line access log per `/proxy` request (method, domain, status,
+  duration, cache result, error class, request ID). Upstream failures carry
+  distinct classes (`dns_error`, `timeout`, `tls_error`,
+  `response_read_error`, `response_too_large`). URLs, query values,
+  headers, and bodies are never logged.
+
+### Changed
+- `runnel_queue_depth` is now the exact tracked-domain total maintained by
+  atomic deltas instead of the last-written queue length. Domains beyond the
+  256 tracking bound are excluded from the total.
+- The configured cache TTL is an upper bound; upstream freshness directives can only shorten entry lifetimes.
+
 ## [0.1.6] - 2026-09-09
 
 ### Added

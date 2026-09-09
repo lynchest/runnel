@@ -32,7 +32,8 @@ security:
 
   # Allowed domain whitelist (exact domains or wildcard prefixes like "*.example.com").
   # When empty ([]), all domains are permitted subject to SSRF IP validation.
-  allowed_domains: []
+  # Startup guard: binding beyond loopback (server.host / RUNNEL_HOST, e.g. 0.0.0.0)
+  # with an empty allowlist is refused. Set this list before exposing runnel.
 
   # Bearer / X-Admin-Token secret for administrative mutations (e.g. POST /_circuit/reset).
   # If empty in YAML, runnel falls back to the RUNNEL_ADMIN_TOKEN environment variable.
@@ -68,6 +69,11 @@ defaults:
   # Sustained rate limit in requests per second allowed per upstream domain.
   requests_per_sec: 0.5
 
+  # Token-bucket burst capacity per domain: how many requests may proceed
+  # immediately before the sustained rate applies. Default 1 serializes
+  # bursts (requests wait, they are not rejected with 429).
+  burst: 1
+
   # Minimum random jitter delay in milliseconds added between outgoing domain requests.
   jitter_min_ms: 200
 
@@ -82,8 +88,9 @@ defaults:
 
   # When true, immediately serves stale cached responses (Warning: 110) while circuit is OPEN.
   serve_stale_on_open: true
-
   # Default Time-To-Live in seconds for cacheable GET/HEAD responses. Set to 0 to disable caching.
+  # This TTL is an upper bound: upstream no-store/private/no-cache and Vary: * are never
+  # stored, while s-maxage/max-age/Expires can shorten freshness per response.
   default_cache_ttl_sec: 3600
 
   # Canary probe strategy to test upstream recovery when circuit enters HALF-OPEN.
@@ -98,6 +105,7 @@ domains:
     cooldown_multiplier: 2.0
     cooldown_max_sec: 1800
     requests_per_sec: 1.0
+    burst: 2
     jitter_min_ms: 100
     jitter_max_ms: 400
     queue_max_size: 100

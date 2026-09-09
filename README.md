@@ -36,18 +36,19 @@ the cooldown is increased exponentially.
 
 ## Features
 
-- Per-domain token-bucket rate limiting with jitter
+- Per-domain token-bucket rate limiting with configurable burst and jitter
 - Per-domain `CLOSED`, `OPEN`, and `HALF-OPEN` circuit breakers
 - Bounded, prioritized in-memory request queues
 - `Retry-After` handling and exponential cooldowns
 - Lightweight GET canary probes in `HALF-OPEN`
-- SQLite-backed cache for GET and HEAD responses
+- SQLite-backed cache for GET and HEAD responses honoring upstream `Cache-Control` and `Vary`
 - Optional stale-cache responses while a circuit is open
 - Singleflight coalescing for identical idempotent requests
 - Redirect target validation
 - SSRF protection against private, loopback, link-local, multicast, and metadata IPs
 - Hop-by-hop header removal and request body limits
-- Health, metrics, and circuit administration endpoints
+- Health, per-domain metrics, and circuit administration endpoints
+- `X-Request-ID` propagation and single-line access logging
 - CGO-free Go binary
 
 ## Security
@@ -106,8 +107,10 @@ docker run -d --name runnel \
 ```
 
 The container retains the safe loopback bind by default. Setting
-`RUNNEL_HOST=0.0.0.0` is required for a published port; restrict
-`security.allowed_domains` and keep the published port on a trusted network.
+`RUNNEL_HOST=0.0.0.0` is required for a published port. A non-loopback bind
+with empty `security.allowed_domains` is refused at startup, so mount a
+config that restricts egress (e.g. `-v ./runnel.yaml:/config.yaml -e
+RUNNEL_CONFIG=/config.yaml`) and keep the published port on a trusted network.
 
 Or as a sidecar in `docker-compose.yml`:
 
@@ -117,10 +120,12 @@ services:
     image: ghcr.io/lynchest/runnel:latest
     environment:
       RUNNEL_HOST: 0.0.0.0
+      RUNNEL_CONFIG: /config.yaml
     ports:
       - "8090:8090"
     volumes:
       - runnel-data:/data
+      - ./runnel.yaml:/config.yaml:ro # must set security.allowed_domains
     restart: unless-stopped
 
 volumes:
@@ -202,9 +207,8 @@ environment variable. All supported settings are documented in
 
 | Method | Endpoint | Description |
 | --- | --- | --- |
-| Any | `/proxy?url=<target>` | Validates and forwards a request to the upstream |
-| GET | `/_healthz` | SQLite and application readiness check |
-| GET | `/_metrics` | Prometheus-compatible counters |
+| Any | `/proxy?url=<target>` | Validates and forwards a request to the upstream (accepts `X-Request-ID`, generates one when absent, propagates it upstream, and emits a single-line access log without URLs or credentials) |
+| GET | `/_metrics` | Prometheus-compatible counters (global + per-domain `domain` labels for 256 tracked domains; queue depth is the tracked-domain total) |
 | GET | `/_circuit` | JSON view of domain circuit states |
 | POST | `/_circuit/reset[?domain=...]` | Resets one domain or all circuits |
 
@@ -219,8 +223,20 @@ curl -X POST \
 
 ## Cache and failure behavior
 
-Successful GET and HEAD responses can be cached for the configured TTL. When a
-circuit is open and an older cached response is available, it is returned with
+Successful GET and HEAD responses can be cached for the configured TTL.
+Upstream caching rules are honored: `no-store`, `private`, and `no-cache`
+responses are never stored, `s-maxage`/`max-age` shorten freshness (the
+configured TTL remains an upper bound), and `Expires` applies when no
+explicit freshness directive is present. Response age (`Age` header and
+`Date` skew) is subtracted from the lifetime, and ambiguous freshness
+directives (unparseable or conflicting repeats) refuse the store.
+`Vary: *` responses are never stored; other `Vary` fields are matched
+against the request before a HIT, and concurrent requests with different
+headers never share one upstream fetch. The documented exception is
+`X-Request-ID`: it is per-request unique, so it does not split flights and
+responses varying on it are never cached. `must-revalidate` and
+`proxy-revalidate` responses may serve fresh hits but are never served stale.
+When a circuit is open and an older cached response is available, it is returned with
 `X-Cache: STALE` and `Warning: 110` headers. Without a cached response, the
 request waits in the domain queue. If the queue is full or its timeout expires,
 the gateway returns `503 Service Unavailable` with a `Retry-After` header.
