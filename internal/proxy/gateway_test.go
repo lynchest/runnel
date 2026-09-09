@@ -21,6 +21,7 @@ import (
 )
 
 type memoryResponseCache struct {
+	mu    sync.Mutex
 	entry storage.CacheEntry
 	hit   bool
 	sets  int
@@ -30,6 +31,8 @@ type memoryResponseCache struct {
 }
 
 func (c *memoryResponseCache) Get(context.Context, string) (storage.CacheEntry, bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.staleOnly {
 		return storage.CacheEntry{}, false, nil
 	}
@@ -37,10 +40,14 @@ func (c *memoryResponseCache) Get(context.Context, string) (storage.CacheEntry, 
 }
 
 func (c *memoryResponseCache) GetStale(context.Context, string) (storage.CacheEntry, bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.entry.Clone(), c.hit, nil
 }
 
 func (c *memoryResponseCache) Set(_ context.Context, entry storage.CacheEntry) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.entry = entry.Clone()
 	c.hit = true
 	c.sets++
