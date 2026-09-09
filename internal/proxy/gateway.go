@@ -152,10 +152,6 @@ func NewGateway(config GatewayConfig) *Gateway {
 	if selector == nil {
 		selector = NewProbeSelector(ProbeHeadersOnly)
 	}
-	cacheTTL := config.CacheTTL
-	if cacheTTL <= 0 {
-		cacheTTL = time.Hour
-	}
 	return &Gateway{
 		client:           &client,
 		validator:        config.Validator,
@@ -170,7 +166,7 @@ func NewGateway(config GatewayConfig) *Gateway {
 		upstreamTimeout:  timeout,
 		probeSelector:    selector,
 		cache:            config.Cache,
-		cacheTTL:         cacheTTL,
+		cacheTTL:         config.CacheTTL,
 		serveStaleOnOpen: config.ServeStaleOnOpen,
 		metrics:          config.Metrics,
 	}
@@ -271,7 +267,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	domain := target.Hostname()
 	cacheable := isCacheableMethod(r.Method)
 	bypassCache := requestsCacheBypass(r)
-	if cacheable && !bypassCache && g.cache != nil {
+	if cacheable && !bypassCache && g.cache != nil && g.cacheTTL > 0 {
 		entry, hit, cacheErr := g.cache.Get(r.Context(), key)
 		if cacheErr != nil {
 			if g.metrics != nil {
@@ -290,7 +286,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	breaker := g.breakerForDomain(domain)
 	requestQueue := g.queueForDomain(domain)
-	if g.serveStaleOnOpen && cacheable && g.serveStale(w, r, key, breaker) {
+	if g.serveStaleOnOpen && cacheable && g.cacheTTL > 0 && g.serveStale(w, r, key, breaker) {
 		return
 	}
 	if !g.admitWith(w, r, breaker, requestQueue) {
@@ -309,6 +305,19 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// A queued request may have been released while CLOSED and then delayed by
+	// the limiter. Refuse it if another request reopened the circuit meanwhile.
+	postLimitSnapshot := circuit.Snapshot{}
+	if breaker != nil {
+		postLimitSnapshot = breaker.Snapshot()
+	}
+	if postLimitSnapshot.State == circuit.StateOpen {
+		if g.metrics != nil {
+			g.metrics.CircuitRejectedTotal.Add(1)
+		}
+		writeUnavailable(w, postLimitSnapshot.RemainingCooldown)
+		return
+	}
 
 	fetch := func(ctx context.Context) (GatewayResponse, error) {
 		return g.fetchWithBreaker(ctx, r, target, validated, breaker)
@@ -323,7 +332,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if r.Context().Err() != nil {
 			return
 		}
-		if g.serveStaleOnOpen && cacheable && g.serveStale(w, r, key, breaker) {
+		if g.serveStaleOnOpen && cacheable && g.cacheTTL > 0 && g.serveStale(w, r, key, breaker) {
 			return
 		}
 		status := http.StatusBadGateway
@@ -333,15 +342,17 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, http.StatusText(status), status)
 		return
 	}
-	if cacheable && g.cache != nil && response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices {
+	if cacheable && g.cache != nil && g.cacheTTL > 0 && response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices && response.StatusCode != http.StatusPartialContent {
 		if response.Header == nil {
 			response.Header = make(http.Header)
 		}
 		response.Header.Set("X-Cache", "MISS")
+		cacheHeaders := response.Header.Clone()
+		stripSensitiveCacheHeaders(cacheHeaders)
 		entry := storage.CacheEntry{
 			Key:        key,
 			StatusCode: response.StatusCode,
-			Headers:    response.Header.Clone(),
+			Headers:    cacheHeaders,
 			Body:       append([]byte(nil), response.Body...),
 			ExpiresAt:  time.Now().Add(g.cacheTTL),
 			CreatedAt:  time.Now(),
@@ -352,6 +363,17 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeGatewayResponse(w, response)
+}
+
+func stripSensitiveCacheHeaders(header http.Header) {
+	if header == nil {
+		return
+	}
+	for name := range header {
+		if strings.EqualFold(name, "Set-Cookie") || strings.EqualFold(name, "WWW-Authenticate") || strings.EqualFold(name, "Proxy-Authenticate") {
+			delete(header, name)
+		}
+	}
 }
 
 func (g *Gateway) doBounded(ctx context.Context, fn func(context.Context) (GatewayResponse, error)) (GatewayResponse, error) {
@@ -656,6 +678,7 @@ func (g *Gateway) fetchWithBreaker(ctx context.Context, original *http.Request, 
 
 func writeCacheEntry(w http.ResponseWriter, entry storage.CacheEntry, cacheState string) {
 	header := entry.Headers.Clone()
+	stripSensitiveCacheHeaders(header)
 	if cacheState != "" {
 		header.Set("X-Cache", cacheState)
 	}

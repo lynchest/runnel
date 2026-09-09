@@ -28,7 +28,7 @@ security:
   block_private_ips: true
 
   # When true, answers HTTP OPTIONS preflight requests with CORS headers allowing cross-origin clients.
-  enable_cors: true
+  enable_cors: false
 
   # Allowed domain whitelist (exact domains or wildcard prefixes like "*.example.com").
   # When empty ([]), all domains are permitted subject to SSRF IP validation.
@@ -83,7 +83,7 @@ defaults:
   # When true, immediately serves stale cached responses (Warning: 110) while circuit is OPEN.
   serve_stale_on_open: true
 
-  # Default Time-To-Live in seconds for cached HTTP 2xx GET/HEAD responses.
+  # Default Time-To-Live in seconds for cacheable GET/HEAD responses. Set to 0 to disable caching.
   default_cache_ttl_sec: 3600
 
   # Canary probe strategy to test upstream recovery when circuit enters HALF-OPEN.

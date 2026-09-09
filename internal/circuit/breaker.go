@@ -244,6 +244,9 @@ func (b *Breaker) deadline(now time.Time, delay time.Duration, supplied bool, fa
 	if !supplied {
 		delay = b.fallback(failure)
 	}
+	if delay > b.config.MaxCooldown {
+		delay = b.config.MaxCooldown
+	}
 	return now.Add(delay)
 }
 

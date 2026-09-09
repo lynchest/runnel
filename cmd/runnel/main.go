@@ -691,6 +691,7 @@ func main() {
 		_ = app.Shutdown(context.Background())
 		log.Fatal(err)
 	}
+	log.Printf("listening on %s", listener.Addr())
 	serveErrors := make(chan error, 1)
 	go func() { serveErrors <- app.Serve(listener) }()
 

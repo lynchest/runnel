@@ -31,8 +31,7 @@ COPY --chown=runnel:runnel runnel.example.yaml /etc/runnel/runnel.yaml
 USER runnel:runnel
 WORKDIR /home/runnel
 
-ENV RUNNEL_HOST="0.0.0.0" \
-    RUNNEL_PORT="8090"
+ENV RUNNEL_PORT="8090"
 
 VOLUME ["/data"]
 

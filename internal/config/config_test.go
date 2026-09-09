@@ -260,6 +260,14 @@ defaults:
 			wantErrSub: "jitter_max_ms (200) must be greater than or equal to jitter_min_ms (500)",
 		},
 		{
+			name: "invalid negative default cache ttl",
+			yamlContent: `
+defaults:
+  default_cache_ttl_sec: -1
+`,
+			wantErrSub: "default_cache_ttl_sec cannot be negative",
+		},
+		{
 			name: "invalid probe_strategy",
 			yamlContent: `
 defaults:
@@ -323,5 +331,15 @@ unknown_key: "value"
 				t.Fatalf("expected error containing %q, got %q", tt.wantErrSub, err.Error())
 			}
 		})
+	}
+}
+
+func TestConfigAllowsZeroCacheTTLToDisableCaching(t *testing.T) {
+	cfg, err := config.Load(strings.NewReader("defaults:\n  default_cache_ttl_sec: 0\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Defaults.DefaultCacheTTLSec != 0 {
+		t.Fatalf("default cache ttl = %d, want 0", cfg.Defaults.DefaultCacheTTLSec)
 	}
 }

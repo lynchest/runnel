@@ -96,9 +96,14 @@ Multi-arch container images (`linux/amd64`, `linux/arm64`) are published to GitH
 ```bash
 docker run -d --name runnel \
   -p 8090:8090 \
+  -e RUNNEL_HOST=0.0.0.0 \
   -v runnel-data:/data \
   ghcr.io/lynchest/runnel:latest
 ```
+
+The container retains the safe loopback bind by default. Setting
+`RUNNEL_HOST=0.0.0.0` is required for a published port; restrict
+`security.allowed_domains` and keep the published port on a trusted network.
 
 Or as a sidecar in `docker-compose.yml`:
 
@@ -106,6 +111,8 @@ Or as a sidecar in `docker-compose.yml`:
 services:
   runnel:
     image: ghcr.io/lynchest/runnel:latest
+    environment:
+      RUNNEL_HOST: 0.0.0.0
     ports:
       - "8090:8090"
     volumes:

@@ -116,12 +116,26 @@ func (l *Limiter) AcquireN(ctx context.Context, n int) error {
 		jDur := l.jitter.Jitter()
 		if jDur > 0 {
 			if err := l.clock.Sleep(ctx, jDur); err != nil {
+				l.refund(n)
 				return err
 			}
 		}
 	}
 
 	return nil
+}
+
+func (l *Limiter) refund(n int) {
+	if n <= 0 {
+		return
+	}
+	l.mu.Lock()
+	l.refillLocked(l.clock.Now())
+	l.tokens += float64(n)
+	if l.tokens > l.burst {
+		l.tokens = l.burst
+	}
+	l.mu.Unlock()
 }
 
 // Wait blocks until 1 token is available without applying jitter.

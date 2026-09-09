@@ -136,6 +136,15 @@ func TestBreakerRateLimitHeaderUsesParsedDuration(t *testing.T) {
 	}
 }
 
+func TestBreakerClampsSuppliedRetryAfterToMaxCooldown(t *testing.T) {
+	clock := newTestClock(time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC))
+	breaker := NewBreaker(Config{InitialCooldown: time.Second, MaxCooldown: 10 * time.Second}, clock)
+	breaker.OnRateLimitHeader(clock.Now().Add(24 * time.Hour).Format(http.TimeFormat))
+	if got := breaker.Snapshot().RemainingCooldown; got != 10*time.Second {
+		t.Fatalf("supplied cooldown = %s, want 10s", got)
+	}
+}
+
 func TestBreakerExactlyOneHalfOpenPermitAmongContenders(t *testing.T) {
 	clock := newTestClock(time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC))
 	breaker := NewBreaker(Config{InitialCooldown: time.Second, MaxCooldown: time.Second}, clock)

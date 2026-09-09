@@ -278,8 +278,8 @@ func validateDefaults(d *DomainDefaults) error {
 	if d.QueueTimeoutSec <= 0 {
 		return fmt.Errorf("queue_timeout_sec must be positive, got %d", d.QueueTimeoutSec)
 	}
-	if d.DefaultCacheTTLSec <= 0 {
-		return fmt.Errorf("default_cache_ttl_sec must be positive, got %d", d.DefaultCacheTTLSec)
+	if d.DefaultCacheTTLSec < 0 {
+		return fmt.Errorf("default_cache_ttl_sec cannot be negative, got %d", d.DefaultCacheTTLSec)
 	}
 	if !isValidProbeStrategy(d.ProbeStrategy) {
 		return fmt.Errorf("probe_strategy must be %q or %q, got %q", StrategyHeadersOnly, StrategyQueryParam, d.ProbeStrategy)

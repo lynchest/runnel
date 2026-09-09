@@ -177,6 +177,28 @@ func TestLimiterAcquireWithJitter(t *testing.T) {
 	}
 }
 
+func TestLimiterCancellationDuringJitterRefundsToken(t *testing.T) {
+	start := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	clock := limiter.NewMockClock(start)
+	l := limiter.New(0, 1, limiter.WithClock(clock), limiter.WithJitter(fixedJitter{val: time.Second}))
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() { errCh <- l.Acquire(ctx) }()
+	for i := 0; i < 50 && clock.WaiterCount() == 0; i++ {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if clock.WaiterCount() != 1 {
+		t.Fatal("expected jitter sleeper")
+	}
+	cancel()
+	if err := <-errCh; err != context.Canceled {
+		t.Fatalf("Acquire error = %v, want context canceled", err)
+	}
+	if got := l.Tokens(); got != 1 {
+		t.Fatalf("tokens after canceled jitter = %v, want 1", got)
+	}
+}
+
 func TestLimiterBurstExceeded(t *testing.T) {
 	l := limiter.New(10.0, 2)
 	err := l.WaitN(context.Background(), 5)
