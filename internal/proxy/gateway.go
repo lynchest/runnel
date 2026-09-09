@@ -273,7 +273,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if g.metrics != nil {
 				g.metrics.CacheErrorsTotal.Add(1)
 			}
-		} else if hit {
+		} else if hit && isCacheableResponseStatus(entry.StatusCode) {
 			if g.metrics != nil {
 				g.metrics.CacheHitsTotal.Add(1)
 			}
@@ -342,7 +342,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, http.StatusText(status), status)
 		return
 	}
-	if cacheable && g.cache != nil && g.cacheTTL > 0 && response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices && response.StatusCode != http.StatusPartialContent {
+	if cacheable && g.cache != nil && g.cacheTTL > 0 && isCacheableResponseStatus(response.StatusCode) {
 		if response.Header == nil {
 			response.Header = make(http.Header)
 		}
@@ -363,6 +363,10 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeGatewayResponse(w, response)
+}
+
+func isCacheableResponseStatus(status int) bool {
+	return status >= http.StatusOK && status < http.StatusMultipleChoices && status != http.StatusPartialContent
 }
 
 func stripSensitiveCacheHeaders(header http.Header) {
@@ -462,7 +466,7 @@ func (g *Gateway) serveStale(w http.ResponseWriter, r *http.Request, key string,
 		return false
 	}
 	entry, hit, err := g.cache.GetStale(r.Context(), key)
-	if err != nil || !hit {
+	if err != nil || !hit || !isCacheableResponseStatus(entry.StatusCode) {
 		return false
 	}
 	if entry.Valid(time.Now()) {

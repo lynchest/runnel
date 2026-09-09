@@ -329,6 +329,39 @@ func TestGatewayDoesNotCachePartialContent(t *testing.T) {
 	}
 }
 
+func TestGatewayIgnoresLegacyPartialContentCacheEntry(t *testing.T) {
+	cache := &memoryResponseCache{
+		hit: true,
+		entry: storage.CacheEntry{
+			StatusCode: http.StatusPartialContent,
+			Headers:    http.Header{"Content-Range": {"bytes 0-99/1000"}},
+			Body:       []byte("partial"),
+		},
+	}
+	var calls atomic.Int32
+	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader("complete")),
+			Request:    r,
+		}, nil
+	})
+	gateway := NewGateway(GatewayConfig{Client: &http.Client{Transport: transport}, Cache: cache, CacheTTL: time.Minute})
+	recorder := httptest.NewRecorder()
+	target := "/proxy?url=" + url.QueryEscape("https://api.test.com/legacy-file")
+	gateway.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, target, nil))
+	if recorder.Code != http.StatusOK || recorder.Body.String() != "complete" {
+		t.Fatalf("response = %d %q, want 200 complete", recorder.Code, recorder.Body.String())
+	}
+	if recorder.Header().Get("X-Cache") != "MISS" {
+		t.Fatalf("X-Cache = %q, want MISS", recorder.Header().Get("X-Cache"))
+	}
+	if calls.Load() != 1 || cache.sets != 1 {
+		t.Fatalf("upstream calls = %d, cache writes = %d; want 1 and 1", calls.Load(), cache.sets)
+	}
+}
+
 func TestGatewayNonPositiveCacheTTLDisablesCache(t *testing.T) {
 	for _, ttl := range []time.Duration{0, -time.Second} {
 		t.Run(ttl.String(), func(t *testing.T) {

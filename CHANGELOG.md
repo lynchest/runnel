@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5] - 2026-09-09
+
+### Security
+- Prevent cached upstream authentication headers, including `Set-Cookie`, from being replayed to other clients.
+- Prevent HTTP `206 Partial Content` responses from poisoning full-resource cache entries, including entries created by older versions.
+- Make the container retain the loopback bind by default and disable CORS in the example configuration.
+
+### Fixed
+- Clamp upstream `Retry-After` cooldowns to the configured maximum.
+- Recheck circuit state after queue and limiter delays before contacting the upstream.
+- Allow `default_cache_ttl_sec: 0` to disable caching.
+- Refund rate-limit tokens when a request is canceled during jitter.
+- Log the effective listener address at startup.
+
 ## [0.1.4] - 2026-09-08
 
 ### Fixed
