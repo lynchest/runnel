@@ -99,3 +99,35 @@ func equalFold(left, right string) bool {
 	}
 	return true
 }
+
+func BenchmarkRemoveHopByHopHeaders(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		headers := http.Header{
+			"Content-Type":  {"application/json"},
+			"Authorization": {"Bearer secret"},
+			"User-Agent":    {"runnel/1.0"},
+			"Accept":        {"*/*"},
+			"Connection":    {"keep-alive"},
+			"Keep-Alive":    {"timeout=5"},
+			"X-Custom-1":    {"val1"},
+			"X-Custom-2":    {"val2"},
+		}
+		RemoveHopByHopHeaders(headers)
+	}
+}
+
+func BenchmarkRemoveHopByHopHeaders_NoConnection(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		headers := http.Header{
+			"Content-Type":  {"application/json"},
+			"Authorization": {"Bearer secret"},
+			"User-Agent":    {"runnel/1.0"},
+			"Accept":        {"*/*"},
+			"X-Custom-1":    {"val1"},
+			"X-Custom-2":    {"val2"},
+		}
+		RemoveHopByHopHeaders(headers)
+	}
+}

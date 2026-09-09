@@ -1,0 +1,3 @@
+## 2025-05-18 - Avoid Request Cloning and Header Loop Lowercasing in Proxy Hot Paths
+**Learning:** Calling `r.Clone(ctx)` to temporarily mutate request fields (such as `r.URL`) triggers deep copies of the `http.Header` map and all header slice values on every request. Additionally, nested loops over standard hop-by-hop headers called `strings.ToLower` on constant string slices repeatedly for each header in each request, and eagerly allocated token maps even when no `Connection` header was present.
+**Action:** Accept target URLs directly in fingerprint calculations to eliminate `r.Clone` allocations, and use pre-lowercased package-level lookup maps with lazy token map allocation for header filtering.

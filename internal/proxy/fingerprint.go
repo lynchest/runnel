@@ -82,7 +82,13 @@ func CanonicalTargetURL(rawURL string) string {
 // SHA-256 digests, so secrets never appear in the returned value or in the
 // intermediate string passed to SHA-256.
 func ComputeFingerprint(r *http.Request, authCookieNames ...[]string) [32]byte {
-	method, canonicalURL, query, language := requestFingerprintFields(r)
+	return ComputeFingerprintWithTarget(r, nil, authCookieNames...)
+}
+
+// ComputeFingerprintWithTarget calculates the SHA-256 fingerprint using target as the URL if provided.
+// This allows computing fingerprints without cloning http.Request to set URL.
+func ComputeFingerprintWithTarget(r *http.Request, target *url.URL, authCookieNames ...[]string) [32]byte {
+	method, canonicalURL, query, language := requestFingerprintFieldsWithTarget(r, target)
 	var names []string
 	if len(authCookieNames) > 0 {
 		names = authCookieNames[0]
@@ -99,11 +105,16 @@ func ComputeFingerprint(r *http.Request, authCookieNames ...[]string) [32]byte {
 // With no cookie list, the default selected auth-cookie set is used; one list
 // customizes it.
 func Fingerprint(r *http.Request, authCookieNames ...[]string) string {
+	return FingerprintWithTarget(r, nil, authCookieNames...)
+}
+
+// FingerprintWithTarget returns Fingerprint encoded as lowercase hexadecimal using target URL if provided.
+func FingerprintWithTarget(r *http.Request, target *url.URL, authCookieNames ...[]string) string {
 	var names []string
 	if len(authCookieNames) > 0 {
 		names = authCookieNames[0]
 	}
-	digest := ComputeFingerprint(r, names)
+	digest := ComputeFingerprintWithTarget(r, target, names)
 	return hex.EncodeToString(digest[:])
 }
 
@@ -119,14 +130,22 @@ func AuthHash(r *http.Request, cookieNames ...string) string {
 }
 
 func requestFingerprintFields(r *http.Request) (string, string, string, string) {
+	return requestFingerprintFieldsWithTarget(r, nil)
+}
+
+func requestFingerprintFieldsWithTarget(r *http.Request, target *url.URL) (string, string, string, string) {
 	if r == nil {
 		return "", "", "", ""
 	}
 	method := strings.ToUpper(strings.TrimSpace(r.Method))
-	if r.URL == nil {
+	u := target
+	if u == nil {
+		u = r.URL
+	}
+	if u == nil {
 		return method, "", "", normalizeLanguage(r.Header.Values("Accept-Language"))
 	}
-	return method, CanonicalURL(r.URL), CanonicalQuery(r.URL), normalizeLanguage(r.Header.Values("Accept-Language"))
+	return method, CanonicalURL(u), CanonicalQuery(u), normalizeLanguage(r.Header.Values("Accept-Language"))
 }
 
 func authFingerprintHash(r *http.Request, cookieNames []string) string {
