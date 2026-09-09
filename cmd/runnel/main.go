@@ -33,6 +33,14 @@ const (
 	probeWorkerTakeWait    = 25 * time.Millisecond
 )
 
+// version is populated by the release build linker flags. Keep a useful
+// value for local development binaries that are built without GoReleaser.
+var version = "dev"
+
+func versionOutput() string {
+	return fmt.Sprintf("runnel v%s", version)
+}
+
 // Application owns the complete runnel process graph. Construction opens
 // durable dependencies, while Serve starts background workers; this makes
 // tests able to assemble an app and provide an explicitly IPv4 listener.
@@ -653,7 +661,7 @@ func main() {
 	flag.Parse()
 
 	if *versionFlag {
-		fmt.Println("runnel v0.1.1")
+		fmt.Println(versionOutput())
 		return
 	}
 

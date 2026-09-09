@@ -17,7 +17,7 @@ builds:
       - goos: windows
         goarch: arm64
     ldflags:
-      - -s -w
+      - -s -w -X main.version={{ .Version }}
   - id: runnel-get
     main: ./cmd/runnel-get
     binary: runnel-get
