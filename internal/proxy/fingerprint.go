@@ -129,10 +129,6 @@ func AuthHash(r *http.Request, cookieNames ...string) string {
 	return authFingerprintHash(r, names)
 }
 
-func requestFingerprintFields(r *http.Request) (string, string, string, string) {
-	return requestFingerprintFieldsWithTarget(r, nil)
-}
-
 func requestFingerprintFieldsWithTarget(r *http.Request, target *url.URL) (string, string, string, string) {
 	if r == nil {
 		return "", "", "", ""
