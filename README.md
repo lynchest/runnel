@@ -79,6 +79,10 @@ request path. The current local measurements are:
 - Soak test: **10,000 requests** at **32 concurrent workers**, with one upstream
   call due to request coalescing and approximately **10 KB heap growth** during
   the run.
+- Real-upstream validation (`v0.1.5`, 2026-09-09): a **15-minute**,
+  single-concurrency run against a public HTTP test service completed **90
+  upstream requests** and **90 cache hits** with no gateway, cache, circuit, or
+  queue errors.
 
 These are baseline measurements from the included test environment, not hard
 capacity guarantees. Memory usage increases with concurrent requests, queued
@@ -226,6 +230,10 @@ a circuit is open; they are rejected with the applicable cooldown information.
 
 To bypass the cache and force a fresh fetch from upstream, send a `Cache-Control: no-cache` header or use `runnel-get --no-cache <url>`.
 
+For troubleshooting, `runnel-get --verbose <url>` prints the effective gateway,
+HTTP status, `X-Cache`, and `Retry-After` values to stderr without mixing them
+into the response body.
+
 For agent-friendly output from HTML pages, the cross-platform helper can convert
 the response locally without changing the gateway cache:
 
@@ -254,6 +262,15 @@ runnel install-skill
 # Or install to a specific workspace directory
 runnel install-skill .agents/skills/runnel
 ```
+
+Check gateway health and get a compact circuit summary with:
+
+```bash
+runnel status
+```
+
+The legacy `runnel --install-skill` flag remains available for compatibility;
+new usage should use the `install-skill` subcommand above.
 
 **Manual Copy:**
 ```bash

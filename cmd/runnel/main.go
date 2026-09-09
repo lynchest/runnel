@@ -641,7 +641,16 @@ func loadConfig(path string) (*config.Config, error) {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "status" {
+		if len(os.Args) != 2 {
+			log.Fatal("usage: runnel status")
+		}
+		os.Exit(runStatus(os.Stdout, os.Stderr, nil))
+	}
 	if len(os.Args) > 1 && os.Args[1] == "install-skill" {
+		if len(os.Args) > 3 {
+			log.Fatal("usage: runnel install-skill [directory]")
+		}
 		targetDir := ""
 		if len(os.Args) > 2 {
 			targetDir = os.Args[2]
@@ -656,7 +665,7 @@ func main() {
 	}
 
 	configPath := flag.String("config", "", "path to an optional YAML configuration file")
-	installSkillFlag := flag.Bool("install-skill", false, "install embedded AI agent skill definition to ~/.agents/skills/runnel")
+	installSkillFlag := flag.Bool("install-skill", false, "deprecated: use 'runnel install-skill'")
 	versionFlag := flag.Bool("version", false, "print version information and exit")
 	flag.Parse()
 

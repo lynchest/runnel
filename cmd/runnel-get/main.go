@@ -42,11 +42,13 @@ func runWithClient(args []string, stdout, stderr io.Writer, client *http.Client)
 	noCache := flags.Bool("no-cache", false, "bypass the gateway cache")
 	fresh := flags.Bool("fresh", false, "alias for --no-cache")
 	shortFresh := flags.Bool("f", false, "alias for --no-cache")
+	verbose := flags.Bool("verbose", false, "print gateway response metadata to stderr")
 	headers := headerFlags(http.Header{})
 	flags.Var(&headers, "H", "request header in 'Name: Value' form (repeatable)")
 	flags.Usage = func() {
-		_, _ = fmt.Fprintln(flags.Output(), "Usage: runnel-get [--output raw|markdown] [-H 'Header: Value'] <URL>")
+		_, _ = fmt.Fprintln(flags.Output(), "Usage: runnel-get [options] <URL>")
 		_, _ = fmt.Fprintln(flags.Output(), "Example: runnel-get --output markdown 'https://example.com'")
+		flags.PrintDefaults()
 	}
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -90,6 +92,10 @@ func runWithClient(args []string, stdout, stderr io.Writer, client *http.Client)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "response error: %v\n", err)
 		return 1
+	}
+	if *verbose {
+		_, _ = fmt.Fprintf(stderr, "gateway=%s status=%s x-cache=%s retry-after=%s\n",
+			gateway, resp.Status, resp.Header.Get("X-Cache"), resp.Header.Get("Retry-After"))
 	}
 	if resp.StatusCode >= 400 {
 		_, _ = fmt.Fprintf(stderr, "HTTP error: %s\n", resp.Status)

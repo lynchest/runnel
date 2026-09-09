@@ -74,4 +74,31 @@ func TestHelpExitsSuccessfully(t *testing.T) {
 	if exitCode := run([]string{"--help"}, &stdout, &stderr); exitCode != 0 {
 		t.Fatalf("exit code = %d, stderr = %q", exitCode, stderr.String())
 	}
+	if !strings.Contains(stderr.String(), "-verbose") {
+		t.Fatalf("help does not list --verbose: %q", stderr.String())
+	}
+}
+
+func TestRunVerbosePrintsGatewayMetadataToStderr(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/_healthz" {
+			return response(http.StatusOK, "application/json", `{}`), nil
+		}
+		result := response(http.StatusOK, "text/plain", "body")
+		result.Header.Set("X-Cache", "HIT")
+		return result, nil
+	})}
+	t.Setenv("RUNNEL_URL", "http://gateway.test")
+	var stdout, stderr bytes.Buffer
+	if code := runWithClient([]string{"--verbose", "https://example.com"}, &stdout, &stderr, client); code != 0 {
+		t.Fatalf("exit code = %d, stderr = %q", code, stderr.String())
+	}
+	if stdout.String() != "body" {
+		t.Fatalf("stdout = %q, want body", stdout.String())
+	}
+	for _, want := range []string{"gateway=http://gateway.test", "status=200 OK", "x-cache=HIT"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("stderr %q does not contain %q", stderr.String(), want)
+		}
+	}
 }

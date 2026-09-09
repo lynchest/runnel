@@ -28,11 +28,14 @@ runnel-get --output markdown "https://example.com"
 curl -s "http://127.0.0.1:8090/proxy?url=https%3A%2F%2Fapi.github.com%2Fzen"
 
 # Check gateway & circuit health:
-runnel-status
+runnel status
+
+# Show HTTP status, cache state, and Retry-After metadata on stderr:
+runnel-get --verbose "https://api.github.com/zen"
 ```
 
 ## Rules
 - **Use for:** Reddit, Steam, IGDB, GitHub, scraping public web pages.
 - **Do not use for:** Localhost, internal private IPs (blocked by SSRF guard), or files > 64 MB.
 - **Circuit behavior:** If a domain returns 503 with `Retry-After`, the circuit is `OPEN`. Do not spam retry loops; wait for the cooldown.
-- **Updates:** If `runnel-status` indicates an update is available, append a single non-intrusive note at the end of your final response to inform the user. Never interrupt an active task to update.
+- **403 diagnostics:** If an authorized target returns Cloudflare error 1010, first verify that automated access is permitted. Only then retry diagnostically with an appropriate `-H 'User-Agent: ...'`; do not impersonate a browser automatically for every 403.
