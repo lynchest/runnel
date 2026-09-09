@@ -35,4 +35,3 @@ func TestInstallSkillRejectsFlagLikeDirectory(t *testing.T) {
 		}
 	}
 }
-
