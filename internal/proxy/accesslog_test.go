@@ -43,7 +43,7 @@ func TestRequestIDGeneratedAndReturned(t *testing.T) {
 		t.Fatalf("generated request id = %q, want 32 hex chars", id)
 	}
 	for _, c := range id {
-		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			t.Fatalf("generated request id = %q, want lowercase hex", id)
 		}
 	}
