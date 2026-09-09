@@ -27,3 +27,12 @@ func TestInstallSkill(t *testing.T) {
 		t.Fatalf("installed content does not match embedded Content")
 	}
 }
+
+func TestInstallSkillRejectsFlagLikeDirectory(t *testing.T) {
+	for _, invalid := range []string{"--help", "-h", "-something"} {
+		if _, err := Install(invalid); err == nil {
+			t.Fatalf("Install(%q) expected error, got nil", invalid)
+		}
+	}
+}
+

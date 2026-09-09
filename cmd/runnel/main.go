@@ -5,11 +5,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,9 +37,56 @@ const (
 
 // version is populated by the release build linker flags. Keep a useful
 // value for local development binaries that are built without GoReleaser.
-var version = "dev"
+var (
+	version       = "dev"
+	readBuildInfo = debug.ReadBuildInfo
+)
 
 func versionOutput() string {
+	if version != "" && version != "dev" {
+		if strings.HasPrefix(version, "v") {
+			return fmt.Sprintf("runnel %s", version)
+		}
+		return fmt.Sprintf("runnel v%s", version)
+	}
+
+	if info, ok := readBuildInfo(); ok {
+		if info.Main.Version != "" && info.Main.Version != "(devel)" {
+			v := info.Main.Version
+			if !strings.HasPrefix(v, "v") {
+				v = "v" + v
+			}
+			return fmt.Sprintf("runnel %s", v)
+		}
+
+		var rev, revTime string
+		var modified bool
+		for _, s := range info.Settings {
+			switch s.Key {
+			case "vcs.revision":
+				rev = s.Value
+			case "vcs.time":
+				revTime = s.Value
+			case "vcs.modified":
+				modified = s.Value == "true"
+			}
+		}
+
+		if rev != "" {
+			short := rev
+			if len(short) > 7 {
+				short = short[:7]
+			}
+			if modified {
+				short += "-dirty"
+			}
+			if revTime != "" {
+				return fmt.Sprintf("runnel vdev (%s, %s)", short, revTime)
+			}
+			return fmt.Sprintf("runnel vdev (%s)", short)
+		}
+	}
+
 	return fmt.Sprintf("runnel v%s", version)
 }
 
@@ -640,6 +689,29 @@ func loadConfig(path string) (*config.Config, error) {
 	return config.LoadFile(path)
 }
 
+func runInstallSkill(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 1 && strings.HasPrefix(args[1], "-") {
+		_, _ = fmt.Fprintln(stdout, "usage: runnel install-skill [directory]")
+		return 0
+	}
+	if len(args) > 2 {
+		_, _ = fmt.Fprintln(stderr, "usage: runnel install-skill [directory]")
+		return 1
+	}
+	targetDir := ""
+	if len(args) > 1 {
+		targetDir = args[1]
+	}
+	path, err := skill.Install(targetDir)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "failed to install skill: %v\n", err)
+		return 1
+	}
+	_, _ = fmt.Fprintf(stdout, "Successfully installed runnel AI agent skill to:\n  %s\n", path)
+	_, _ = fmt.Fprintln(stdout, "AI coding agents (Antigravity, Codex, Cursor, Claude Code) will now automatically route external requests through runnel.")
+	return 0
+}
+
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "status" {
 		if len(os.Args) != 2 {
@@ -648,19 +720,9 @@ func main() {
 		os.Exit(runStatus(os.Stdout, os.Stderr, nil))
 	}
 	if len(os.Args) > 1 && os.Args[1] == "install-skill" {
-		if len(os.Args) > 3 {
-			log.Fatal("usage: runnel install-skill [directory]")
+		if code := runInstallSkill(os.Args[1:], os.Stdout, os.Stderr); code != 0 {
+			os.Exit(code)
 		}
-		targetDir := ""
-		if len(os.Args) > 2 {
-			targetDir = os.Args[2]
-		}
-		path, err := skill.Install(targetDir)
-		if err != nil {
-			log.Fatalf("failed to install skill: %v", err)
-		}
-		fmt.Printf("Successfully installed runnel AI agent skill to:\n  %s\n", path)
-		fmt.Println("AI coding agents (Antigravity, Codex, Cursor, Claude Code) will now automatically route external requests through runnel.")
 		return
 	}
 
@@ -675,11 +737,9 @@ func main() {
 	}
 
 	if *installSkillFlag {
-		path, err := skill.Install("")
-		if err != nil {
-			log.Fatalf("failed to install skill: %v", err)
+		if code := runInstallSkill([]string{"install-skill"}, os.Stdout, os.Stderr); code != 0 {
+			os.Exit(code)
 		}
-		fmt.Printf("Successfully installed runnel AI agent skill to:\n  %s\n", path)
 		return
 	}
 
