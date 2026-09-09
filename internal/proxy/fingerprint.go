@@ -23,6 +23,10 @@ var defaultAuthCookieNames = []string{
 	"connect.sid",
 }
 
+// defaultNormalizedAuthCookieNames pre-normalizes default auth cookie names once
+// at package initialization to eliminate map allocations and sorting per request.
+var defaultNormalizedAuthCookieNames = normalizeCookieNames(defaultAuthCookieNames)
+
 // CanonicalQuery returns a deterministic query encoding.  Keys and values are
 // sorted, duplicate keys are preserved, and URL encoding follows
 // url.Values.Encode.  Empty queries remain empty.
@@ -52,7 +56,10 @@ func CanonicalURL(u *url.URL) string {
 		return ""
 	}
 	clone := *u
-	clone.Scheme = strings.ToLower(clone.Scheme)
+	// Optimization: Skip strings.ToLower allocation when scheme is already lowercase.
+	if containsUpper(clone.Scheme) {
+		clone.Scheme = strings.ToLower(clone.Scheme)
+	}
 	clone.User = nil
 	clone.Host = canonicalAuthority(clone.Scheme, clone.Host)
 	clone.RawQuery = ""
@@ -60,6 +67,15 @@ func CanonicalURL(u *url.URL) string {
 	clone.Fragment = ""
 	clone.RawFragment = ""
 	return clone.String()
+}
+
+func containsUpper(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 'A' && s[i] <= 'Z' {
+			return true
+		}
+	}
+	return false
 }
 
 // CanonicalTargetURL is a string helper for callers that have not parsed a
@@ -93,9 +109,6 @@ func ComputeFingerprintWithTarget(r *http.Request, target *url.URL, authCookieNa
 	if len(authCookieNames) > 0 {
 		names = authCookieNames[0]
 	}
-	if names == nil {
-		names = defaultAuthCookieNames
-	}
 	authHash := authFingerprintHash(r, names)
 	input := joinFingerprintFields(method, canonicalURL, query, language, authHash)
 	return sha256.Sum256([]byte(input))
@@ -122,11 +135,7 @@ func FingerprintWithTarget(r *http.Request, target *url.URL, authCookieNames ...
 // It is safe for logging and cache-key composition because no credential value
 // is included in the output.
 func AuthHash(r *http.Request, cookieNames ...string) string {
-	names := cookieNames
-	if names == nil {
-		names = defaultAuthCookieNames
-	}
-	return authFingerprintHash(r, names)
+	return authFingerprintHash(r, cookieNames)
 }
 
 func requestFingerprintFieldsWithTarget(r *http.Request, target *url.URL) (string, string, string, string) {
@@ -145,43 +154,103 @@ func requestFingerprintFieldsWithTarget(r *http.Request, target *url.URL) (strin
 }
 
 func authFingerprintHash(r *http.Request, cookieNames []string) string {
+	// Optimization: Stack-allocate fixed 64-byte buffer for hex encoding digests.
+	var hexBuf [64]byte
 	if r == nil {
 		digest := sha256.Sum256(nil)
-		return hex.EncodeToString(digest[:])
+		hex.Encode(hexBuf[:], digest[:])
+		return string(hexBuf[:])
 	}
 
-	authorization := strings.Join(r.Header.Values("Authorization"), "\x00")
-	authDigest := sha256.Sum256([]byte(authorization))
-	parts := []string{"authorization=" + hex.EncodeToString(authDigest[:])}
-
-	// Normalize and sort names so config ordering cannot create cache-key
-	// aliases.  Duplicate names are collapsed case-insensitively.
-	names := normalizeCookieNames(cookieNames)
-	cookies := make(map[string][]string)
-	for _, cookie := range r.Cookies() {
-		key := strings.ToLower(cookie.Name)
-		cookies[key] = append(cookies[key], cookie.Value)
+	// Optimization: Avoid strings.Join allocation when 0 or 1 Authorization header exists.
+	var authDigest [32]byte
+	auths := r.Header.Values("Authorization")
+	if len(auths) == 0 {
+		authDigest = sha256.Sum256(nil)
+	} else if len(auths) == 1 {
+		authDigest = sha256.Sum256([]byte(auths[0]))
+	} else {
+		authorization := strings.Join(auths, "\x00")
+		authDigest = sha256.Sum256([]byte(authorization))
 	}
-	for _, name := range names {
-		values := append([]string(nil), cookies[strings.ToLower(name)]...)
-		sort.Strings(values)
-		if len(values) == 0 {
+
+	names := cookieNames
+	if names == nil {
+		names = defaultNormalizedAuthCookieNames
+	} else {
+		names = normalizeCookieNames(names)
+	}
+
+	// Pre-allocate parts slice: 1 for authorization + 1 per cookie name.
+	parts := make([]string, 0, 1+len(names))
+	hex.Encode(hexBuf[:], authDigest[:])
+	parts = append(parts, "authorization="+string(hexBuf[:]))
+
+	cookieHeaders := r.Header["Cookie"]
+	// Optimization: Bypass cookie parsing entirely when no Cookie header is present.
+	if len(cookieHeaders) == 0 {
+		for _, name := range names {
 			parts = append(parts, name+"=<absent>")
-			continue
 		}
-		for _, value := range values {
-			digest := sha256.Sum256([]byte(value))
-			parts = append(parts, name+"="+hex.EncodeToString(digest[:]))
+	} else {
+		// Optimization: Parse cookie lines directly to avoid r.Cookies() heap allocations.
+		cookies := make(map[string][]string)
+		for _, line := range cookieHeaders {
+			for len(line) > 0 {
+				var part string
+				if i := strings.IndexByte(line, ';'); i >= 0 {
+					part, line = line[:i], line[i+1:]
+				} else {
+					part, line = line, ""
+				}
+				part = strings.TrimSpace(part)
+				if len(part) == 0 {
+					continue
+				}
+				name, val, ok := strings.Cut(part, "=")
+				if !ok {
+					continue
+				}
+				name = strings.TrimSpace(name)
+				val = strings.TrimSpace(val)
+				if len(val) > 1 && val[0] == '"' && val[len(val)-1] == '"' {
+					val = val[1 : len(val)-1]
+				}
+				key := strings.ToLower(name)
+				cookies[key] = append(cookies[key], val)
+			}
+		}
+		for _, name := range names {
+			vals := cookies[strings.ToLower(name)]
+			if len(vals) == 0 {
+				parts = append(parts, name+"=<absent>")
+				continue
+			}
+			values := append([]string(nil), vals...)
+			sort.Strings(values)
+			for _, value := range values {
+				digest := sha256.Sum256([]byte(value))
+				hex.Encode(hexBuf[:], digest[:])
+				parts = append(parts, name+"="+string(hexBuf[:]))
+			}
 		}
 	}
 
 	combined := joinFingerprintFields(parts...)
 	digest := sha256.Sum256([]byte(combined))
-	return hex.EncodeToString(digest[:])
+	hex.Encode(hexBuf[:], digest[:])
+	return string(hexBuf[:])
 }
 
+// joinFingerprintFields formats length-delimited fields into a single builder string.
+// Optimization: Buffer capacity is pre-calculated to avoid strings.Builder reallocations.
 func joinFingerprintFields(fields ...string) string {
+	totalLen := 0
+	for _, field := range fields {
+		totalLen += lenIntStr(len(field)) + 1 + len(field) + 1
+	}
 	var builder strings.Builder
+	builder.Grow(totalLen)
 	for _, field := range fields {
 		builder.WriteString(strconv.Itoa(len(field)))
 		builder.WriteByte(':')
@@ -191,20 +260,37 @@ func joinFingerprintFields(fields ...string) string {
 	return builder.String()
 }
 
+func lenIntStr(n int) int {
+	if n < 10 {
+		return 1
+	}
+	if n < 100 {
+		return 2
+	}
+	if n < 1000 {
+		return 3
+	}
+	if n < 10000 {
+		return 4
+	}
+	return len(strconv.Itoa(n))
+}
+
+// canonicalAuthority returns standard lowercased authority without default ports (80/443).
+// Optimization: Uses string slicing instead of url.Parse("//" + authority) to avoid heap allocation.
 func canonicalAuthority(scheme, authority string) string {
 	if authority == "" {
 		return ""
 	}
-	parsed, err := url.Parse("//" + authority)
-	if err != nil || parsed.Host == "" {
+	host, port := parseAuthority(authority)
+	if port != "" && !isDigits(port) {
 		return strings.ToLower(authority)
 	}
-	host := strings.ToLower(parsed.Hostname())
+	host = strings.ToLower(host)
 	if host == "" {
 		return strings.ToLower(authority)
 	}
 	host = strings.TrimSuffix(host, ".")
-	port := parsed.Port()
 	if (scheme == "http" && port == "80") || (scheme == "https" && port == "443") {
 		port = ""
 	}
@@ -220,21 +306,92 @@ func canonicalAuthority(scheme, authority string) string {
 	return host
 }
 
+func parseAuthority(authority string) (host, port string) {
+	if strings.HasPrefix(authority, "[") {
+		i := strings.LastIndexByte(authority, ']')
+		if i < 0 {
+			return authority, ""
+		}
+		host = authority[1:i]
+		if len(authority) > i+1 && authority[i+1] == ':' {
+			port = authority[i+2:]
+		}
+		return host, port
+	}
+	if i := strings.LastIndexByte(authority, ':'); i >= 0 {
+		return authority[:i], authority[i+1:]
+	}
+	return authority, ""
+}
+
+func isDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func normalizeLanguage(values []string) string {
 	if len(values) == 0 {
 		return ""
 	}
-	parts := make([]string, 0, len(values))
+	var b strings.Builder
 	for _, value := range values {
-		value = strings.Join(strings.Fields(value), " ")
-		if value != "" {
-			parts = append(parts, value)
+		v := compactWhitespace(value)
+		if v != "" {
+			if b.Len() > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(v)
 		}
 	}
-	return strings.Join(parts, ",")
+	return b.String()
+}
+
+// compactWhitespace collapses internal whitespace in s.
+// Optimization: Fast-path returns s unchanged if no whitespace is found, eliminating strings.Fields allocation.
+func compactWhitespace(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" || !containsWhitespace(s) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	inSpace := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+			if !inSpace {
+				b.WriteByte(' ')
+				inSpace = true
+			}
+		} else {
+			b.WriteByte(c)
+			inSpace = false
+		}
+	}
+	return b.String()
+}
+
+func containsWhitespace(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeCookieNames(names []string) []string {
+	if len(names) == 0 {
+		return nil
+	}
 	seen := make(map[string]struct{}, len(names))
 	result := make([]string, 0, len(names))
 	for _, name := range names {
